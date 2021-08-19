@@ -1,0 +1,53 @@
+import arch.arch
+import arch.riscv.csr
+import lib.io
+import main
+
+// M-mode timer interrupt handler
+extern declare _handleTimer: ()
+
+// interval of timer
+let TIMER_INTERVAL = 1000000
+
+// scratch area for M-mode timer interrupt
+public var mscratch: usize[5] = [usize[5]] {}
+
+// initialize timer interrupt
+def initTimer() {
+  // ask CLINT for a timer interrupt
+  let time = *(CLINT_MTIME as u64 volatile var*)
+  (*(CLINT_MCMP as u64 volatile var*)) = time + TIMER_INTERVAL as u64
+  // initialize scratch area
+  mscratch[3] = CLINT_MCMP as usize
+  mscratch[4] = TIMER_INTERVAL as usize
+  setMscratch(mscratch as usize)
+  // set M-mode handler
+  setMtvec(_handleTimer as usize)
+  // enable timer interrupt
+  setMstatus(getMstatus() | MSTATUS_MIE)
+  setMie(getMie() | MIE_MTIE)
+}
+
+// machine mode entry of GeeOS
+extern def entry() {
+  // initialize IO
+  initIO()
+  io <<< "GeeOS is initializing...\n"
+  // set previous mode to S-mode
+  var ms = getMstatus()
+  ms &= ~MSTATUS_MPP_MASK
+  ms |= MSTATUS_MPP_S
+  setMstatus(ms)
+  // set mepc to S-mode entry
+  setMepc(main as usize)
+  // disable paging
+  setSatp(0 as usize)
+  // delegate all interrupts & exceptions to S-mode
+  setMedeleg(0xffff as usize)
+  setMideleg(0xffff as usize)
+  // initialize timer
+  initTimer()
+  // enter S-mode
+  io <<< "entering supervisor mode...\n"
+  asm { "mret" }
+}

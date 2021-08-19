@@ -1,0 +1,22 @@
+// constants
+inline let FILE_NAME_MAX_LEN  = 28 as u32
+
+// file type
+public enum FileType {
+  File, Dir, CharDevice, BlockDevice,
+}
+
+// file status
+public struct Stat {
+  ino: u32,
+  file_type: FileType,
+  size: usize,
+  blk_size: usize,
+  blocks: usize,
+}
+
+// directory entry
+public struct Dirent {
+  inode_id: u32,
+  filename: u8[FILE_NAME_MAX_LEN],
+}

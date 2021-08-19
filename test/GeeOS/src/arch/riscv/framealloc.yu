@@ -1,0 +1,20 @@
+public import arch.riscv.addr
+
+// interface of frame allocator
+public struct FrameAllocator {
+  alloc: (FrameAllocator var*): Frame,
+}
+
+// Allocate a frame of the appropriate size, panic on error.
+inline def alloc(this: FrameAllocator var*): Frame {
+  ((*this).alloc)(this)
+}
+
+// interface of frame deallocator
+public struct FrameDeallocator {
+  dealloc: (FrameDeallocator var*, Frame),
+}
+
+inline def dealloc(this: FrameDeallocator var*, frame: Frame) {
+  ((*this).dealloc)(this, frame)
+}

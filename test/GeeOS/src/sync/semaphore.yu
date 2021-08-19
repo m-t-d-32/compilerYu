@@ -1,0 +1,49 @@
+public import sync.spinlock
+public import lib.queue
+
+public struct Semaphore {
+  lock: Spinlock,
+  value: i32,
+  wait_queue: Queue,
+}
+
+import lib.except
+import proc.proc
+
+public def newSemaphore(value: i32): Semaphore {
+  [Semaphore] {newSpinlock(), value, newQueue()}
+}
+
+public def newSemaphore(): Semaphore {
+  newSemaphore(1)
+}
+
+public def del(this: Semaphore var&) {
+  this.wait_queue.del()
+}
+
+public def wait(this: Semaphore var&) {
+  this.lock.acquire()
+  if this.value > 0 {
+    this.value -= 1
+    this.lock.release()
+  }
+  else {
+    this.wait_queue.push(getCurrentTid() as usize)
+    this.lock.release()
+    sleep()
+  }
+}
+
+public def signal(this: Semaphore var&) {
+  this.lock.acquire()
+  if this.wait_queue.empty() {
+    this.value += 1
+    this.lock.release()
+  }
+  else {
+    let tid = this.wait_queue.pop()
+    this.lock.release()
+    wakeUp(tid as Tid)
+  }
+}

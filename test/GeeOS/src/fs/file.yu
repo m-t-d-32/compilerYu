@@ -1,0 +1,131 @@
+public import arch.arch
+public import fs.vfs.vfs
+
+import lib.except
+import fs.consts
+
+public enum FileStatus {
+  None, Allocated, Opened,
+}
+
+public struct File {
+  status: FileStatus,
+  readable: bool,
+  writable: bool,
+  inode: INode var*,
+  offset: usize,
+}
+
+public def newFile(): File {
+  [File] {FileStatus.None}
+}
+
+inline def isNone(this: File&): bool {
+  this.status == FileStatus.None
+}
+
+inline def isAllocated(this: File&): bool {
+  this.status == FileStatus.Allocated
+}
+
+inline def isOpened(this: File&): bool {
+  this.status == FileStatus.Opened
+}
+
+public def setNone(this: File var&) {
+  assert(this.isAllocated(), "File.setNone")
+  this.status = FileStatus.None
+}
+
+public def setAllocated(this: File var&) {
+  assert(this.isNone(), "File.setAllocated")
+  this.status = FileStatus.Allocated
+}
+
+// get metadata of inode
+public def getMetadata(this: File&, meta: Metadata var&): bool {
+  if this.isOpened() {
+    meta = this.inode.getMetadata()
+    true
+  }
+  else {
+    false
+  }
+}
+
+// open an inode and store necessary information to current fd
+public def open(this: File var&, inode: INode var*, flags: i32): i32 {
+  if !this.isAllocated() {
+    return -1
+  }
+  // parse flags
+  this.readable = (flags & O_ACCMODE) == O_RDONLY ||
+                  (flags & O_ACCMODE) == O_RDWR
+  this.writable = (flags & O_ACCMODE) == O_WRONLY ||
+                  (flags & O_ACCMODE) == O_RDWR
+  // update current object
+  inode.open()
+  this.inode = inode
+  this.status = FileStatus.Opened
+  this.offset = 0 as usize
+  0
+}
+
+public def close(this: File var&): i32 {
+  if this.isOpened() {
+    this.status = FileStatus.Allocated
+    this.inode.close()
+    this.inode = null as INode var*
+    0
+  }
+  else {
+    -1
+  }
+}
+
+public def seek(this: File var&, offset: usize, whence: i32): usize {
+  if this.isOpened() {
+    when whence {
+      SEEK_SET { this.offset = offset }
+      SEEK_CUR { this.offset += offset }
+      SEEK_END {
+        let meta = this.inode.getMetadata()
+        this.offset = meta.size + offset
+      }
+      else { return -1 as usize }
+    }
+    this.offset
+  }
+  else {
+    -1 as usize
+  }
+}
+
+public def read(this: File var&, buf: u8 var*, len: usize): i32 {
+  if this.isOpened() && this.readable {
+    let s = this.inode.read(buf, len, this.offset)
+    this.offset += s as usize
+    s
+  }
+  else {
+    -1
+  }
+}
+
+public def write(this: File var&, buf: u8*, len: usize): i32 {
+  if this.isOpened() && this.writable {
+    let s = this.inode.write(buf, len, this.offset)
+    this.offset += s as usize
+    s
+  }
+  else {
+    -1
+  }
+}
+
+// replace current fd with another fd
+public def replaceWith(this: File var&, that: File var&) {
+  assert(this.isAllocated() && that.isOpened(), "File.replace")
+  this = that
+  this.inode.open()
+}

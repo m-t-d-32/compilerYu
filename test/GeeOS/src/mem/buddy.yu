@@ -1,0 +1,271 @@
+public import arch.arch
+
+import mem.consts
+import sync.spinlock
+import lib.alloc
+import lib.io
+
+struct ListHead {
+    prev: ListHead var*,
+    next: ListHead var*,
+}
+
+def insertList(prev: ListHead var*, node: ListHead var*) {
+    // 放在prev后面
+    let next = (*prev).next
+    (*node).prev = prev
+    (*node).next = next
+    (*next).prev = node
+    (*prev).next = node
+}
+
+def getAndDelFromList(prev: ListHead var*): ListHead var* {
+    // 取prev后面的
+    var p = (*prev).next
+    let next = (*p).next
+    (*next).prev = prev
+    (*prev).next = next
+    p
+}
+
+def fixSize(size: usize): usize {
+    // 将大小向上取整为2的整数次幂
+    var size32 = size as u32
+    size32 |= size32 >> 1 as u32
+    size32 |= size32 >> 2 as u32
+    size32 |= size32 >> 4 as u32
+    size32 |= size32 >> 8 as u32
+    size32 |= size32 >> 16 as u32
+    size32 as usize + 1 as usize
+}
+
+struct FreeArea {
+    free_list: ListHead,
+    order: usize,
+    block_size: usize,
+    nr_free: usize,
+}
+
+struct BlockInfo {
+    lru: ListHead,
+    state: usize, // 该block的等级
+}
+
+struct Zone {
+    lock: Spinlock,
+    heap_mem: u8 var*,
+    heap_base: u8 var*,
+    max_pool_size: usize,
+    max_block_size: usize, // 以字节计算
+    free_lists: FreeArea[MAX_BUDDY_ORDER],
+}
+
+
+var zone_mem: Zone
+
+def moreCore(): u8 var* {
+    if (zone_mem.heap_base + zone_mem.max_block_size > zone_mem.heap_mem + HEAP_SIZE) {
+        null as u8 var*
+    } else {
+        let p = zone_mem.heap_base as BlockInfo var*
+        zone_mem.heap_base += zone_mem.max_block_size
+        zone_mem.max_pool_size += zone_mem.max_block_size
+        (*p).state = (MAX_BUDDY_ORDER - 1) as usize
+        //io<<<"there"<<<(*p).state<<<'\n'
+        // insertList(&(zone_mem.free_lists[MAX_BUDDY_ORDER - 1].free_list), &((*p).lru))
+        // zone_mem.free_lists[MAX_BUDDY_ORDER - 1].nr_free += 1 as usize
+        // io<<<(zone_mem.free_lists[MAX_BUDDY_ORDER - 1].free_list.next) as usize <<<'\n'
+        p as u8 var*
+    }
+}
+
+def divide(order: usize): u8 var* {
+    // 返回一个不在free list中的项，不需要后续处理
+    if (order == MAX_BUDDY_ORDER as usize - 1 as usize) {
+        return moreCore()
+    }
+    var i = order as u32 + 1 as u32
+    var p: u8 var*
+    while (i < MAX_BUDDY_ORDER as u32) {
+        // 找到合适的待分拆
+        if (zone_mem.free_lists[i].nr_free >= 1 as usize) {
+            // var temp = getAndDelFromList(&(zone_mem.free_lists[i].free_list)) as usize var*
+            // io<<<"++++++\n"
+            // io<<<temp as usize <<<'\n'
+            // io<<<(temp - 1 as usize) as usize<<<'\n'
+            p = getAndDelFromList(&(zone_mem.free_lists[i].free_list)) as u8 var*
+            zone_mem.free_lists[i].nr_free -= 1 as usize
+            break
+        }
+        i += 1 as u32
+    }
+    if (i == MAX_BUDDY_ORDER as u32) {
+        // 申请空间
+        p = moreCore()
+        if (p == null as u8 var*) {
+            io <<< "mem is not enough"<<<'\n'
+            return null as u8 var*
+        }
+        i -= 1 as usize
+        // p = (getAndDelFromList(&(zone_mem.free_lists[MAX_BUDDY_ORDER - 1].free_list)) as usize var* - 1 as usize) as u8 var*
+        // zone_mem.free_lists[MAX_BUDDY_ORDER - 1].nr_free -= 1 as usize
+        
+    }
+    var q: u8 var*
+    var left: BlockInfo var*
+    var right: BlockInfo var*
+    while (i > order) {
+        // 拆分并每次取出右侧块
+        q = p + (zone_mem.free_lists[i].block_size / 2 as usize) as usize
+        left = p as BlockInfo var*
+        right = q as BlockInfo var*
+        (*left).state -= 1 as usize
+
+        (*right).state = (*left).state
+        insertList(&(zone_mem.free_lists[i - 1 as u32].free_list), &((*left).lru))
+        zone_mem.free_lists[i - 1 as u32].nr_free += 1 as usize
+        // io<<<"+++++++test======\n"
+        // io<<< (&(zone_mem.free_lists[i - 1 as u32].free_list)) as usize<<<'\n'
+        // io<<<zone_mem.free_lists[i - 1 as u32].free_list.next as usize<<<'\n'
+        // zone_mem.free_lists[i - 1 as u32].nr_free += 1 as usize
+        p = q
+        i -= 1 as u32
+    }
+    p
+}
+
+def merge(ptr: u8 var*, id: usize, buddy_id: usize, order: usize): u8 var* {
+    var p: ListHead var* = zone_mem.free_lists[order].free_list.next as ListHead var*
+    var buddy_ptr: u8 var*
+    var head: ListHead var* = &(zone_mem.free_lists[order].free_list) as ListHead var*
+    var ret = null as u8 var*
+    // io<<<"head "<<<head as usize<<<"\n"
+    // io<<<"p    "<<<p as usize <<<'\n'
+    // 后续可以改进直接计算buddy的指针
+    while(p != head) {
+        var block_id = (p as usize - zone_mem.heap_mem as usize)
+        block_id /= BUDDY_UNIT as usize
+        if (buddy_id == block_id) {
+            // 合并ptr和p
+            buddy_ptr = getAndDelFromList((*p).prev) as u8 var*
+            zone_mem.free_lists[order].nr_free -= 1 as usize
+            // 交换顺序，buddy在前
+            if (id < buddy_id) {
+                buddy_ptr = ptr
+            }
+            (*(buddy_ptr as BlockInfo var*)).state += 1 as usize
+            ret =  buddy_ptr as u8 var*
+            break
+        } else {
+            p = (*p).next
+        }
+    }
+    ret
+}
+
+def allocMem(size: usize): u8 var* {
+    // 作为block信息头的BlockInfo要进行保留，不能使用，且总大小为2的整数次幂
+    var block_size = size + sizeof BlockInfo
+    block_size = fixSize(block_size)
+    if (block_size < BUDDY_UNIT as usize) {
+        block_size = BUDDY_UNIT as usize
+    }
+    var ret = null as u8 var*
+    if (block_size >= zone_mem.max_block_size) {
+        io <<< "size of heap need to alloc is too large "<<<block_size<<< '\n'
+        return null as u8 var*
+    }
+    // 要找的块的级别
+    var i = 0 as u32
+    let temp = block_size / BUDDY_UNIT as u32
+    var order: usize
+    while (i < MAX_BUDDY_ORDER as u32) {
+        if (((temp as i32) >> (i as i32)) as u32 == (1 as u32)) {
+            order = i as usize
+        }
+        i += 1 as u32
+    }
+    // io<<<"level of the mem block is "<<< order <<<'\n'
+    if (zone_mem.free_lists[order].nr_free >= 1 as usize) {
+        // 取出一个
+        ret = getAndDelFromList(&(zone_mem.free_lists[order].free_list)) as u8 var*
+        zone_mem.free_lists[order].nr_free -= 1 as usize
+    } else {
+        // 往上找并拆分，再返回
+        ret = divide(order)
+    }
+    ret + sizeof BlockInfo
+}
+
+def freeMem(ptr: u8 var*) {
+    var block_info: BlockInfo var*
+    var block_order: usize
+    var block_id: usize
+    var buddy_id: usize
+    var temp: u8 var*
+    var merge_ptr = ptr - sizeof BlockInfo
+    while(true) {
+        block_info = merge_ptr as BlockInfo var*
+        block_order = (*block_info).state
+        block_id = (merge_ptr as usize - zone_mem.heap_mem as usize)
+        block_id /= BUDDY_UNIT as usize
+        buddy_id = (block_id as i32 ^ (1 << block_order as i32)) as usize
+        // io<<<"buddy id is "<<< buddy_id<<<'\n'
+        // io<<<"block order is "<<< block_order<<<'\n'
+        temp = merge(merge_ptr, block_id, buddy_id, block_order)
+        if (temp == null as u8 var*) {
+            break
+        } else {
+            merge_ptr = temp
+        }
+    }
+    block_order = (*(merge_ptr as BlockInfo var*)).state
+    insertList(&(zone_mem.free_lists[block_order].free_list), &((*(merge_ptr as BlockInfo var*)).lru))
+    zone_mem.free_lists[block_order].nr_free += 1 as usize
+}
+
+// allocate new heap memory
+def allocHeapMem(size: usize): u8 var* {
+  zone_mem.lock.acquire()
+  let ret = allocMem(size)
+  zone_mem.lock.release()
+  ret
+}
+
+// free allocated heap memory
+def freeHeapMem(ptr: u8 var*) {
+  zone_mem.lock.acquire()
+  freeMem(ptr)
+  zone_mem.lock.release()
+}
+
+def test() {
+    io<<<"=======\n"
+    io <<<zone_mem.free_lists[0].nr_free<<<'\n'
+    io <<<zone_mem.free_lists[1].nr_free<<<'\n'
+    io <<<zone_mem.free_lists[2].nr_free<<<'\n'
+    io <<<zone_mem.free_lists[3].nr_free<<<'\n'
+    io<<<"=======\n"
+}
+
+public def initHeapMem() {
+    zone_mem.lock = newSpinlock()
+    zone_mem.heap_mem = HEAP_BASE as u8 var*
+    zone_mem.heap_base = zone_mem.heap_mem
+    zone_mem.max_pool_size = 0 as usize
+    zone_mem.max_block_size = ((1 << (MAX_BUDDY_ORDER - 1)) as usize) * (BUDDY_UNIT as usize)
+    // io<<<(zone_mem.buddy_begin as usize)<<<'\n'
+    // io<<<(HEAP_BASE as usize)<<<'\n'
+    io<<<"size of max block size is (byte)"<<<zone_mem.max_block_size<<<'\n'
+    var i = 0 as u32
+    while (i < (MAX_BUDDY_ORDER as u32)) {
+        zone_mem.free_lists[i].order = i as usize
+        // io <<< zone_mem.free_lists[i].order <<< '\n'
+        zone_mem.free_lists[i].nr_free = 0 as usize
+        zone_mem.free_lists[i].block_size = ((1 << i as i32) as usize) * (BUDDY_UNIT as usize)
+        zone_mem.free_lists[i].free_list.next = &zone_mem.free_lists[i].free_list
+        zone_mem.free_lists[i].free_list.prev = &zone_mem.free_lists[i].free_list
+        i += 1 as u32
+    }
+    heap.init(allocHeapMem, freeHeapMem)
+}

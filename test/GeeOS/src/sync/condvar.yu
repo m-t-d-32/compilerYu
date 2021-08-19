@@ -1,0 +1,39 @@
+public import sync.spinlock
+public import lib.queue
+
+import proc.proc
+
+public struct CondVar {
+  lock: Spinlock,
+  wait_queue: Queue,
+}
+
+public def newCondVar(): CondVar {
+  [CondVar] {newSpinlock(), newQueue()}
+}
+
+public def del(this: CondVar var&) {
+  this.wait_queue.del()
+}
+
+public def wait(this: CondVar var&) {
+  this.lock.acquire()
+  this.wait_queue.push(getCurrentTid() as usize)
+  this.lock.release()
+  sleep()
+}
+
+public def notify(this: CondVar var&) {
+  var tid: usize
+  // pop thread id from queue
+  this.lock.acquire()
+  let valid = !this.wait_queue.empty()
+  if valid {
+    tid = this.wait_queue.pop()
+  }
+  this.lock.release()
+  // wake up thread
+  if valid {
+    wakeUp(tid as Tid)
+  }
+}

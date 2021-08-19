@@ -1,0 +1,84 @@
+import arch.arch
+import lib.io
+import lib.except
+import lib.elf
+import lib.c.string
+import boot.uart
+
+// boot from specific address
+extern declare jumpToAddr: (u8*)
+def boot(addr: u8*) {
+  io <<< "booting from 0x" <<$ addr as u32 <<< "...\n\n"
+  jumpToAddr(addr)
+}
+
+// load ELF file from specific address to memory
+def loadElf(addr: u8*): u8* {
+  // read & check ELF file
+  let elf = newElfFile(addr)
+  let ehdr = elf.getEhdr()
+  if !ehdr.isValid() {
+    panic("invalid ELF file")
+  }
+  // copy ELF to RAM
+  io <<< "loading ELF...\n"
+  for phdr in elf.getPhdrIter() {
+    let dst = phdr.getPaddr() as u8 var*
+    let src = elf.getPhdrData(phdr)
+    // copy data
+    memcpy(dst, src, phdr.getFileSize() as usize)
+    // fill zeros to the end of the data
+    let rem_size = phdr.getMemSize() - phdr.getFileSize()
+    memset(dst + phdr.getFileSize(), 0, rem_size as usize)
+  }
+  // get address of entry
+  let phdr = elf.getPhdr()
+  let off = phdr.getVaddr() - phdr.getPaddr()
+  (ehdr.getEntry() - off) as u8*
+}
+
+// read word from address
+def readWord(addr: i32): i32 {
+  *(addr as u32 volatile var*) as i32
+}
+
+// write word to address
+def writeWord(addr: i32, word: i32) {
+  *(addr as u32 volatile var*) = word as u32
+}
+
+extern def entry() {
+  initIO()
+  writeWord(LED_ADDR, 0xffff)
+  io <<< "GeeOS bootloader v0.0.1\n"
+  // determine boot mode
+  io <<< "boot mode: "
+  let addr = if readWord(SWITCH_ADDR) == 0 {
+    // boot from flash
+    writeWord(NUM_ADDR, 1)
+    io <<< "flash\n"
+    FLASH_ADDR as u8*
+  }
+  else {
+    // boot from UART
+    writeWord(NUM_ADDR, 2)
+    io <<< "UART\n"
+    receiveFromUart()
+  }
+  // load ELF data to memory
+  let entry = loadElf(addr)
+  // execute ELF data
+  writeWord(NUM_ADDR, 0)
+  io <<< "exiting bootloader...\n"
+  boot(entry)
+}
+
+extern def handleTrap(mepc: u32, mcause: u32, mtval: u32) {
+  // display messsage
+  writeWord(LED_ADDR, ~mcause as i32)
+  writeWord(NUM_ADDR, mepc as i32)
+  io <<< "  mepc:   0x" <<$ mepc <<< '\n'
+  io <<< "  mcause: 0x" <<$ mcause <<< '\n'
+  io <<< "  mtval:  0x" <<$ mtval <<< '\n'
+  panic("unexpected trap occurred while booting!")
+}

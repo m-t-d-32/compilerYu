@@ -1,0 +1,32 @@
+public import fs.fat32fs.fat32fs
+
+import fs.dev.mem
+import lib.except
+
+// filesystem image embedded in kernel, defined in 'init.S'
+extern declare _user_img_start: ()
+extern declare _user_img_end: ()
+
+// filesystem related objects
+public var fat32fs: FileSystem var* = null as FileSystem var*
+var dev: MemDevice
+
+
+// initialize Fat32FS
+public def initFat32Fs() {
+  // initialize device
+  dev = newMemDevice(_user_img_start as u8 var*,
+                     _user_img_end as usize - _user_img_start as usize)
+  // initialize Fat32FS
+  initFat32FsOps()
+  fat32fs = newFat32Fs(&dev as DeviceInterface var*)
+  if fat32fs == null as FileSystem var* {
+    panic("failed to open Fat32FS")
+  }
+}
+
+// clean up Fat32FS
+public def cleanUpFat32Fs() {
+  fat32fs.del()
+  dev.del()
+}

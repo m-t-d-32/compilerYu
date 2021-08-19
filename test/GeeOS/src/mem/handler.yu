@@ -1,0 +1,97 @@
+public import arch.arch
+public import mem.attr
+public import mem.paging
+
+import lib.alloc
+import mem.pm
+import lib.except
+
+
+// interface of memory handler
+// object of this structure must be allocated on heap
+public struct MemoryHandler {
+  map: (MemoryHandler var*, ActivePageTable var&, usize, MemoryAttr&),
+  unmap: (MemoryHandler var*, ActivePageTable var&, usize),
+  ref_count: i32,
+}
+
+public def del(this: MemoryHandler var*) {
+  assert((*this).ref_count == 0, "MemoryHandler.del")
+  heap.dealloc(this as u8 var*)
+}
+
+public def incCounter(this: MemoryHandler var*) {
+  (*this).ref_count += 1
+}
+
+public def decCounter(this: MemoryHandler var*) {
+  (*this).ref_count -= 1
+  if (*this).ref_count == 0 {
+    this.del()
+  }
+}
+
+// map address to page table
+public def map(this: MemoryHandler var*, pt: ActivePageTable var&,
+               addr: usize, attr: MemoryAttr&) {
+  ((*this).map)(this, pt, addr, attr)
+}
+
+// unmap address in page table
+public def unmap(this: MemoryHandler var*, pt: ActivePageTable var&,
+                 addr: usize) {
+  ((*this).unmap)(this, pt, addr)
+}
+
+
+// linear mapping
+public struct LinearHandler {
+  base: MemoryHandler,
+  offset: isize,
+}
+
+def linearMap(this: MemoryHandler var*, pt: ActivePageTable var&,
+              addr: usize, attr: MemoryAttr&) {
+  let this: LinearHandler& = *(this as LinearHandler*)
+  attr.apply(pt.map(addr, (addr as isize + this.offset) as usize))
+}
+
+def linearUnmap(this: MemoryHandler var*, pt: ActivePageTable var&,
+                addr: usize) {
+  pt.unmap(addr)
+}
+
+public def newLinearHandler(offset: isize): MemoryHandler var* {
+  let handler = heap.alloc(sizeof LinearHandler) as LinearHandler var*
+  (*handler).base = [MemoryHandler] {linearMap, linearUnmap}
+  (*handler).offset = offset
+  handler as MemoryHandler var*
+}
+
+
+// map by frame
+public struct FrameHandler {
+  base: MemoryHandler,
+}
+
+def frameMap(this: MemoryHandler var*, pt: ActivePageTable var&,
+             addr: usize, attr: MemoryAttr&) {
+  // allocate new frame
+  let target = allocPhyMem() as usize
+  assert(target != 0 as usize, "frameMap - OOM")
+  attr.apply(pt.map(addr, target))
+}
+
+def frameUnmap(this: MemoryHandler var*, pt: ActivePageTable var&,
+               addr: usize) {
+  let frame = pt.unmap(addr)
+  // release allocated frame
+  let pa = frame.getAddr()
+  freePhyMem(pa.getAddr() as u8 var*)
+}
+
+public def newFrameHandler(): MemoryHandler var* {
+  let handler = heap.alloc(sizeof FrameHandler) as FrameHandler var*
+  (*handler).base = [MemoryHandler] {frameMap, frameUnmap}
+  handler as MemoryHandler var*
+}

@@ -1,0 +1,487 @@
+public import fs.dev.device
+public import fs.vfs.vfs
+
+import fs.fat32fs.structs
+import lib.hashmap
+import sync.semaphore
+import lib.except
+import lib.alloc
+import lib.algo
+import lib.io
+import lib.strview
+
+struct Fat32DirectoryTree {
+  inode: INode,
+  //一个目录的数据结构
+
+  //目录的文件信息
+  file_name: u8*,  //文件名
+  file_begin_cluster: u32, //文件的开始簇号
+  file_size: u32, //文件大小
+  is_directory: bool, //是否为目录
+
+  parent: Fat32DirectoryTree var*,  //父目录的数据结构（如果是根目录则为null）
+  childs_list: Fat32DirectoryTree var*var*,  //子目录数组的数据结构
+  childs_count: u32,  //子目录计数
+  fs: FileSystem var*, //文件系统指针（指向Fat32Fs）
+}
+
+// filesystem object
+// NOTE: this object will NOT HAVE any inodes
+//       i.e. stores only references of inodes
+struct Fat32Fs {
+  // vfs interface
+  fs: FileSystem,
+  // low-level device
+  dev: DeviceInterface var*,
+  // super block on disk
+  dbr_table: DBRTable,
+  // semaphore for inode map
+  // TODO: use spinlock?
+  sema: Semaphore,
+  fat_table: u32 var*,
+  fat_table_size: u32,
+
+  root_dir: Fat32DirectoryTree var*,
+}
+
+/*
+ * INode related stuffs
+ */
+// virtual operations of Fat32Fs object, shared static object
+var inode_ops: INodeOps
+
+// get Fat32Fs memory inode from inode
+def getINode(this: INode var*): Fat32DirectoryTree var& {
+  *(this as Fat32DirectoryTree var*)
+}
+
+/*
+ * filesystem related stuffs
+ */
+var fat32fs_ops: FileSystemOps
+
+
+def checkAndPrint(this: Fat32Fs var&): bool {
+  io <<< "fat_table_count [" <<< this.dbr_table.fat_table_count as u32 <<< "]\n"
+  io <<< "sector_size [" <<< this.dbr_table.sector_size as u32 <<< "]\n" 
+  io <<< "fat_table_sector_count [" <<< this.dbr_table.fat_table_sector_count as u32 <<< "]\n" 
+  io <<< "fat_table_start_sector [" <<< this.dbr_table.fat_table_start_sector as u32 <<< "]\n" 
+  io <<< "cluster_sector_size [" <<< this.dbr_table.cluster_sector_size as u32 <<< "]\n" 
+  io <<< "root_dictionary_cluster [" <<< this.dbr_table.root_dictionary_cluster as u32 <<< "]\n" 
+  io <<< "fat32_verify_code [" <<< this.dbr_table.fat32_verify_code as u8 var* <<< "]\n" 
+  var my = newStrView(this.dbr_table.fat32_verify_code as u8*) as StrView
+  my == "FAT32   "
+}
+
+def setFATTable(this: Fat32Fs var&): bool {
+  let fat_table_begin = this.dbr_table.fat_table_start_sector * this.dbr_table.sector_size
+  this.fat_table_size = this.dbr_table.fat_table_sector_count * this.dbr_table.sector_size as u32
+  this.fat_table = heap.alloc(this.fat_table_size as usize) as u32 var*
+  this.dev.readAssert(this.fat_table_size as usize, this.fat_table as u8 var*, fat_table_begin as usize)
+}
+
+def doClear(file_name: u8 var*var*, file_size: u32 var*, file_begin_cluster: u32 var*, file_is_directory: bool var*) {
+  *file_name = null as u8 var*
+  *file_size = 0 as u32
+  *file_begin_cluster = 0 as u32
+  *file_is_directory = false as bool
+}
+
+def getDirectoryTree(this: Fat32Fs var&, file_name: u8*, fat32_table_item: u32, size: u32, parent: Fat32DirectoryTree var*, is_directory: bool): Fat32DirectoryTree var* {
+  //先计算数据区偏移
+  let offset1 = this.dbr_table.fat_table_start_sector as u32
+  let offset2 = (this.dbr_table.fat_table_count as u32) * (this.dbr_table.fat_table_sector_count as u32) as u32
+  let offset3 = -(this.dbr_table.root_dictionary_cluster as u32) * (this.dbr_table.cluster_sector_size as u32) as u32
+  let all_offset = ((offset1 + offset2 + offset3) * this.dbr_table.sector_size as u32) as usize
+  //传入的参数为文件占用第一个簇的簇号，有可能占用多个簇
+   var result_directory_tree = heap.alloc(sizeof Fat32DirectoryTree) as Fat32DirectoryTree var*
+  //初始化INode部分
+  (result_directory_tree as INode var*).init(&inode_ops)
+  //文件系统
+  (*result_directory_tree).fs = (&this) as FileSystem var*
+  //是否为目录
+  (*result_directory_tree).is_directory = is_directory
+  //文件名放入file_name字段
+  (*result_directory_tree).file_name = file_name
+  //簇字段
+  (*result_directory_tree).file_begin_cluster = fat32_table_item
+  (*result_directory_tree).file_size = size
+  //父目录字段
+  (*result_directory_tree).parent = parent
+  //子目录字段
+   if is_directory {
+     let max_cluster = 0xFFFFFF0 as u32
+     var fat32_table_item_i = fat32_table_item as u32
+     var file_fat_table_item_count = 0 as u32
+     //查看占用了多少个簇
+     while fat32_table_item_i < max_cluster {
+      fat32_table_item_i = this.fat_table[fat32_table_item_i]
+      file_fat_table_item_count = file_fat_table_item_count + 1 as u32
+     }
+     //申请临时内存（以后再也不用了，因为建好树了）
+     let cluster_size = ((this.dbr_table.cluster_sector_size as u32) * (this.dbr_table.sector_size as u32)) as usize 
+     let max_directory_entry_count = (file_fat_table_item_count * cluster_size as u32) / DIRECTORY_ITEM_LEN as u32
+     var temp_dir_entries = heap.alloc((max_directory_entry_count * DIRECTORY_ITEM_LEN) as usize) as u8 var*
+     //先把所有的目录项读进来
+     fat32_table_item_i = fat32_table_item as u32  //簇序
+     file_fat_table_item_count = 0 as u32  //顺序
+
+     while fat32_table_item_i < max_cluster {
+      //某一个簇+0开始，读簇那么多大小，读到顺序空间
+      this.dev.readAssert(cluster_size, (temp_dir_entries + (file_fat_table_item_count * cluster_size as usize)) as u8 var*, (fat32_table_item_i * cluster_size + all_offset) as usize)
+      file_fat_table_item_count = file_fat_table_item_count + 1 as u32
+      fat32_table_item_i = this.fat_table[fat32_table_item_i]
+     }
+
+     //一个个遍历，每个长度32
+     var fat32_directory_item_i = 0 as u32
+     var file_name = null as u8 var* //文件名
+     var file_size = 0 as u32, file_begin_cluster = 0 as u32, file_is_directory = false as bool
+     var cur_part_long_name = null as u16 var* //当前读取的长文件名
+     var cur_part_long_name_len = 0 as usize  //当前读取的长文件名的长度
+     var cur_long_name = null as u16 var* //当前的长文件名
+     var cur_long_name_len = 0 as usize  //当前的长文件名的长度
+     var checksums = 0 as u8  //长目录项的校验和
+
+     var childs_count = 0 as u32
+     //仅仅枚举孩子节点的个数
+     while fat32_directory_item_i < max_directory_entry_count {
+        var file_item_flag = temp_dir_entries[fat32_directory_item_i * DIRECTORY_ITEM_LEN + 0 as u32] as u8
+        if file_item_flag == 0 as u8 { //所有目录项都遍历完毕
+          break
+        }
+        else if (file_item_flag == 0xe5 as u8) || //文件已经删除
+        (file_item_flag == 0x2e as u8) { //文件是.或..
+          fat32_directory_item_i = fat32_directory_item_i + 1 as u32
+          continue
+        }
+        //读出文件的属性
+        var file_attribute = temp_dir_entries[fat32_directory_item_i * DIRECTORY_ITEM_LEN + 11 as u32] as u8
+        if file_attribute != 0x0f as u8 {
+          childs_count = childs_count + 1 as u32
+        }
+        fat32_directory_item_i = fat32_directory_item_i + 1 as u32
+      }
+
+      (*result_directory_tree).childs_count = childs_count
+      (*result_directory_tree).childs_list = heap.alloc((childs_count * sizeof Fat32DirectoryTree var*) as usize) as Fat32DirectoryTree var*var*
+      fat32_directory_item_i = 0 as u32
+      childs_count = 0 as u32
+
+      //建立孩子节点（性能不佳，如果用链表会好一些，但是并没有找到可以只声明不定义结构体的方式）
+      while fat32_directory_item_i < max_directory_entry_count {
+       var file_item_flag = temp_dir_entries[fat32_directory_item_i * DIRECTORY_ITEM_LEN + 0 as u32] as u8
+       if file_item_flag == 0 as u8 { //所有目录项都遍历完毕
+         if file_name != null as u8 var* {
+           //保存上一次的子文件
+           (*result_directory_tree).childs_list[childs_count] = this.getDirectoryTree(file_name as u8*, file_begin_cluster as u32, file_size as u32, result_directory_tree as Fat32DirectoryTree var*, file_is_directory as bool)
+           childs_count = childs_count + 1 as u32
+         }
+         doClear(&file_name, &file_size, &file_begin_cluster, &file_is_directory)
+         break
+       }
+       else if (file_item_flag == 0xe5 as u8) || //文件已经删除
+       (file_item_flag == 0x2e as u8) { //文件是.或..
+         if file_name != null as u8 var* {
+           (*result_directory_tree).childs_list[childs_count] = this.getDirectoryTree(file_name as u8*, file_begin_cluster as u32, file_size as u32, result_directory_tree as Fat32DirectoryTree var*, file_is_directory as bool)
+           childs_count = childs_count + 1 as u32
+         }
+         doClear(&file_name, &file_size, &file_begin_cluster, &file_is_directory)
+         fat32_directory_item_i = fat32_directory_item_i + 1 as u32
+         continue
+       }
+       //读出文件的属性
+       var file_attribute = temp_dir_entries[fat32_directory_item_i * DIRECTORY_ITEM_LEN + 11 as u32] as u8
+       if file_attribute == 0x0f as u8 { //是长目录项
+          if file_name != null as u8 var* {
+            (*result_directory_tree).childs_list[childs_count] = this.getDirectoryTree(file_name as u8*, file_begin_cluster as u32, file_size as u32, result_directory_tree as Fat32DirectoryTree var*, file_is_directory as bool)
+            childs_count = childs_count + 1 as u32
+          }
+          doClear(&file_name, &file_size, &file_begin_cluster, &file_is_directory)
+          // 前置搜索，把长文件名保存
+          cur_part_long_name = heap.alloc(FAT32_FILE_NAME_MAX_LEN as usize) as u16 var*
+          var long_file_name_i = 0 as u32
+          var temp_name_chr: u16
+          cur_part_long_name_len = 0 as usize
+          // 读入当前簇存储的部分长文件名
+          while long_file_name_i < DIRECTORY_ITEM_LEN as u32 { // 遍历长目录项 每个字符占2字节
+            temp_name_chr = temp_dir_entries[fat32_directory_item_i * DIRECTORY_ITEM_LEN + long_file_name_i as usize] as u16
+            // 长目录项中的一些非字符项
+            if (long_file_name_i == 0x0 as u32) || 
+            (long_file_name_i == 0xB as u32) || 
+            (long_file_name_i == 0xC as u32) || 
+            (long_file_name_i == 0xD as u32) ||
+            (long_file_name_i == 0x1A as u32) ||
+            (long_file_name_i == 0x1B as u32){
+              long_file_name_i += 1 as u32
+              continue
+            }
+            if temp_name_chr == 0 as u16 {
+             break
+            }
+            cur_part_long_name[cur_part_long_name_len] = temp_name_chr
+            long_file_name_i += 2 as u32
+            cur_part_long_name_len += 1 as usize
+          }
+          if cur_long_name_len == 0 as usize { // 之前没有存储过长文件名
+            cur_long_name = heap.alloc(FAT32_FILE_NAME_MAX_LEN as usize) as u16 var *
+            checksums = temp_dir_entries[fat32_directory_item_i * DIRECTORY_ITEM_LEN + 0xD as u32] as u8
+          }
+          else {
+            assert(checksums == temp_dir_entries[fat32_directory_item_i * DIRECTORY_ITEM_LEN + 0xD as u32] as u8, "checksums")
+            // 为当前部分的长文件名在头部挪出位置
+            var swap_i = cur_long_name_len as i32 - 1
+            while swap_i >= 0 as i32{
+              cur_long_name[swap_i as usize + cur_part_long_name_len] = cur_long_name[swap_i]
+              swap_i -= 1 as i32
+            }
+          }
+          // 把当前部分的字符串插入到前面的空白位置
+          var insert_i = 0 as u32
+          while insert_i < cur_part_long_name_len {
+            cur_long_name[insert_i] = cur_part_long_name[insert_i]
+            insert_i += 1 as u32
+          }
+          cur_part_long_name = null as u16 var*
+          cur_long_name_len += cur_part_long_name_len
+       }
+       else {
+          if file_name != null as u8 var* {
+            (*result_directory_tree).childs_list[childs_count] = this.getDirectoryTree(file_name as u8*, file_begin_cluster as u32, file_size as u32, result_directory_tree as Fat32DirectoryTree var*, file_is_directory as bool)
+            childs_count = childs_count + 1 as u32
+          }
+          doClear(&file_name, &file_size, &file_begin_cluster, &file_is_directory)
+
+          //读出文件的起始簇号
+          var file_begin_cluster_2 = temp_dir_entries[fat32_directory_item_i * DIRECTORY_ITEM_LEN + 20 as u32] as u8
+          var file_begin_cluster_3 = temp_dir_entries[fat32_directory_item_i * DIRECTORY_ITEM_LEN + 21 as u32] as u8
+          var file_begin_cluster_0 = temp_dir_entries[fat32_directory_item_i * DIRECTORY_ITEM_LEN + 26 as u32] as u8
+          var file_begin_cluster_1 = temp_dir_entries[fat32_directory_item_i * DIRECTORY_ITEM_LEN + 27 as u32] as u8
+          file_begin_cluster = ((file_begin_cluster_3 as u32 << 24 as u32) + 
+                               (file_begin_cluster_2 as u32 << 16 as u32) + 
+                               (file_begin_cluster_1 as u32 << 8 as u32) + 
+                               (file_begin_cluster_0 as u32)) as u32
+          //读出文件的大小
+          var file_size_0 = temp_dir_entries[fat32_directory_item_i * DIRECTORY_ITEM_LEN + 28 as u32] as u8
+          var file_size_1 = temp_dir_entries[fat32_directory_item_i * DIRECTORY_ITEM_LEN + 29 as u32] as u8
+          var file_size_2 = temp_dir_entries[fat32_directory_item_i * DIRECTORY_ITEM_LEN + 30 as u32] as u8
+          var file_size_3 = temp_dir_entries[fat32_directory_item_i * DIRECTORY_ITEM_LEN + 31 as u32] as u8
+          file_size = ((file_size_3 as u32 << 24 as u32) + 
+                      (file_size_2 as u32 << 16 as u32) + 
+                      (file_size_1 as u32 << 8 as u32) + 
+                      (file_size_0 as u32)) as u32
+
+          if (file_attribute & 0x10 as u8) != 0 as u8 {
+            file_is_directory = true
+          }
+          else {
+            file_is_directory = false
+          }
+          //读出短文件名
+          file_name = heap.alloc(FAT32_FILE_NAME_MAX_LEN as usize) as u8 var *
+          var short_file_name_i = 0 as u32
+          while short_file_name_i < 11 as u32 {
+            file_name[short_file_name_i] = temp_dir_entries[fat32_directory_item_i * DIRECTORY_ITEM_LEN + short_file_name_i] as u8
+            if file_name[short_file_name_i] == 0x20 as u8 {
+              file_name[short_file_name_i] = '\0'
+            }
+            short_file_name_i = short_file_name_i + 1 as u32
+          }
+          file_name[11] = '\0' as u8
+          if cur_long_name_len != 0 as usize {
+            // 假设文件名都是英文
+            var changetype_i = 0 as u32
+            // 双字节uniclode码转换为ascii码
+            while changetype_i < cur_long_name_len {
+              file_name[changetype_i] = cur_long_name[changetype_i] as u8
+              changetype_i += 1 as u32
+            }
+            file_name[changetype_i] = '\0' as u8
+            cur_long_name = null as u16 var*
+            cur_long_name_len = 0 as usize
+          }
+       }
+       fat32_directory_item_i = fat32_directory_item_i + 1 as u32
+     }
+     heap.dealloc(temp_dir_entries)
+   }
+   result_directory_tree
+}
+
+def setDirectoryTree(this: Fat32Fs var&): bool {
+  this.root_dir = this.getDirectoryTree("" as u8*, this.dbr_table.root_dictionary_cluster as u32, 0 as u32, null as Fat32DirectoryTree var*, true as bool)
+  true
+}
+
+// open filesystem image on device, returns false if failed
+def open(this: Fat32Fs var&): bool {
+  // read super block header
+  var read_success = true
+  read_success = read_success && this.dev.readAssert(1 as usize, &this.dbr_table.fat_table_count as u8 var*, 0x10 as usize)
+  read_success = read_success && this.dev.readAssert(2 as usize, &this.dbr_table.sector_size as u8 var*, 0xb as usize)
+  read_success = read_success && this.dev.readAssert(4 as usize, &this.dbr_table.fat_table_sector_count as u8 var*, 0x24 as usize)
+  read_success = read_success && this.dev.readAssert(2 as usize, &this.dbr_table.fat_table_start_sector as u8 var*, 0xe as usize)
+  read_success = read_success && this.dev.readAssert(1 as usize, &this.dbr_table.cluster_sector_size as u8 var*, 0xd as usize)
+  read_success = read_success && this.dev.readAssert(4 as usize, &this.dbr_table.root_dictionary_cluster as u8 var*, 0x2c as usize)
+  read_success = read_success && this.dev.readAssert(8 as usize, this.dbr_table.fat32_verify_code as u8 var*, 0x52 as usize)
+  // check and print dbr table
+  read_success = read_success && this.checkAndPrint()
+  // initialize fat table
+  read_success = read_success && this.setFATTable()
+  // initialize directory tree
+  read_success = read_success && this.setDirectoryTree()
+
+  read_success
+}
+
+// create filesystem by opening image on device
+public def newFat32Fs(dev: DeviceInterface var*): FileSystem var* {
+  // create Fat32Fs object
+  let fat32fs = heap.alloc(sizeof Fat32Fs) as Fat32Fs var*
+  (fat32fs as FileSystem var*).init(&fat32fs_ops)
+  (*fat32fs).dev = dev
+  (*fat32fs).sema = newSemaphore()
+  // perform open operation
+  if (*fat32fs).open() {
+    // fat32fs as FileSystem var*
+    &((*fat32fs).fs)
+  }
+  else {
+    (fat32fs as FileSystem var*).del()
+    null as FileSystem var*
+  }
+}
+
+// get Fat32Fs object from filesystem
+def getFat32Fs(this: FileSystem var*): Fat32Fs var& {
+  *(this as Fat32Fs var*)
+}
+
+/*
+ * inode virtual operations
+ */
+// get filesystem
+def fat32fsINodeGetFs(this: INode var*): FileSystem var* {
+   (*(this as Fat32DirectoryTree var*)).fs
+}
+
+// inode type converter
+def convToINodeType(this: Fat32DirectoryTree): INodeType {
+  if !this.is_directory {
+    INodeType.File
+  }
+  else {
+    INodeType.Dir
+  }
+}
+
+// get metadata of current inode
+def fat32fsINodeGetMetadata(this: INode var*): Metadata {
+  let inode: Fat32DirectoryTree& = this.getINode()
+  [Metadata] {
+    inode.file_begin_cluster as u32,
+    inode.convToINodeType(),
+    inode.file_size as usize,
+    0 as u32,
+    0 as u32,
+  }
+}
+
+// find inode by name
+def fat32fsINodeFind(this: INode var*, name: StrView&): INode var* {
+  //在孩子节点里面找到name
+  
+  var child_i = 0 as u32
+  var result = null as INode var*
+  let tree: Fat32DirectoryTree& = this.getINode()
+  while child_i < tree.childs_count as u32{
+    let child_tree = tree.childs_list[child_i] as Fat32DirectoryTree var*
+    if name.equalwithoutcase((*child_tree).file_name) {
+      result = child_tree as INode var*
+      break
+    }
+    child_i = child_i + 1 as u32
+  }
+  result
+}
+
+
+// read inode content to buffer
+def fat32fsINodeRead(this: INode var*, buf: u8 var*, len: usize,
+                 offset: usize): i32 {
+  if len != this.getINode().file_size {
+    -1 as i32
+  }
+  else {
+    var remain = len as usize
+    var fs = *(this.fat32fsINodeGetFs() as Fat32Fs var*)
+    let offset1 = fs.dbr_table.fat_table_start_sector as u32
+    let offset2 = (fs.dbr_table.fat_table_count as u32) * (fs.dbr_table.fat_table_sector_count as u32) as u32
+    let offset3 = -(fs.dbr_table.root_dictionary_cluster as u32) * (fs.dbr_table.cluster_sector_size as u32) as u32
+    let all_offset = ((offset1 + offset2 + offset3) * fs.dbr_table.sector_size as u32) as usize
+
+    let cluster_size = ((fs.dbr_table.cluster_sector_size as u32) * (fs.dbr_table.sector_size as u32)) as usize 
+    var cluster_now = this.getINode().file_begin_cluster as u32
+    var offset_now = offset as usize
+
+    while remain > cluster_size {
+      fs.dev.readAssert(cluster_size as usize, buf + offset_now as usize, (cluster_now * cluster_size + all_offset) as usize)
+      cluster_now = fs.fat_table[cluster_now]
+      offset_now = offset_now + cluster_size
+      remain -= cluster_size
+    }
+
+    //读取最后一个簇
+    fs.dev.readAssert(remain as usize, buf + offset_now as usize, (cluster_now * cluster_size + all_offset) as usize)
+    len as i32
+  }
+}
+
+// write buffer content to inode
+def fat32fsINodeWrite(this: INode var*, buf: u8*, len: usize,
+                  offset: usize): i32 {
+  // TODO
+  -1
+}
+
+// clean up before being released
+def fat32fsINodeCleanUp(this: INode var*) {
+  // TODO
+  //释放file_name
+}
+
+
+def fat32fsSync(this: FileSystem var*): bool {
+  this.getFat32Fs().dev.sync()
+}
+
+def fat32fsCleanUp(this: FileSystem var*) {
+  let fs: Fat32Fs var& = this.getFat32Fs()
+}
+
+public def fat32fsGetRoot(this: FileSystem var*): INode var* {
+  let fs: Fat32Fs var& = this.getFat32Fs()
+  let directorytree: Fat32DirectoryTree var& = *fs.root_dir
+  &directorytree.inode
+}
+
+
+/*
+ * filesystem initializers
+ */
+// initialize virtual operations
+public def initFat32FsOps() {
+  // inode ops
+  inode_ops.op_get_fs = fat32fsINodeGetFs
+  inode_ops.op_get_metadata = fat32fsINodeGetMetadata
+  inode_ops.op_find = fat32fsINodeFind
+  inode_ops.op_read = fat32fsINodeRead
+  inode_ops.op_write = fat32fsINodeWrite
+  inode_ops.op_cleanup = fat32fsINodeCleanUp
+
+  // filesystem ops
+  fat32fs_ops.op_get_root = fat32fsGetRoot
+  fat32fs_ops.op_sync = fat32fsSync
+  fat32fs_ops.op_cleanup = fat32fsCleanUp
+}

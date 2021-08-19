@@ -1,0 +1,130 @@
+import lib.io
+import lib.c.string
+import lib.sys.syscall
+
+let BUF_SIZE = 128
+var buf: u8[BUF_SIZE]
+
+
+// read user input to buffer
+def getCmd(): bool {
+  var len = 0, pos = 0
+  while true {
+    let c = io.getChar()
+    when c {
+      // new line
+      '\r', '\n' {
+        io <<< "\r\n"
+        buf[len] = '\0'
+        return len > 0
+      }
+      // backspace
+      '\x7f' {
+        if pos > 0 {
+          io <<< '\b'
+          // remove character in current position
+          var i = pos
+          while i < len {
+            io <<< buf[i]
+            buf[i - 1] = buf[i]
+            i += 1
+          }
+          // clear the last character
+          io <<< " \b"
+          // reset position of cursor
+          i = pos
+          while i < len {
+            io <<< '\b'
+            i += 1
+          }
+          // update length and cursor position
+          len -= 1
+          pos -= 1
+          continue
+        }
+      }
+      // console virtual terminal sequences
+      '\x1b' {
+        if io.getChar() == '[' {
+          when io.getChar() {
+            // cursor forward
+            'C' {
+              if pos < len {
+                io <<< "\x1b[C"
+                pos += 1
+                continue
+              }
+            }
+            // cursor backward
+            'D' {
+              if pos > 0 {
+                io <<< "\x1b[D"
+                pos -= 1
+                continue
+              }
+            }
+          }
+        }
+      }
+      // other characters
+      else {
+        if len + 1 < BUF_SIZE {
+          // insert a character in current position
+          var i = len - 1
+          while i >= pos {
+            buf[i + 1] = buf[i]
+            i -= 1
+          }
+          buf[pos] = c
+          // update display
+          i = pos
+          while i < len + 1 {
+            io <<< buf[i]
+            i += 1
+          }
+          // reset position of cursor
+          i = pos
+          while i < len {
+            io <<< '\b'
+            i += 1
+          }
+          // update length and cursor position
+          len += 1
+          pos += 1
+          continue
+        }
+      }
+    }
+    io <<< '\a'
+  }
+  false
+}
+
+// parse and execute command line in buffer
+def runCmd(): i32 {
+  if !strcmp(buf as u8*, "exit") {
+    // exit current thread
+    exit(0 as usize)
+    0
+  }
+  else {
+    // just execute
+    let ret = execve(buf as u8*, null as u8**, null as u8**)
+    if ret < 0 {
+      io <<< "command not found: " <<< buf as u8* <<< '\n'
+    }
+    ret
+  }
+}
+
+extern def main(argc: i32, argv: u8**): i32 {
+  io <<< "Welcome to GeeOS shell!\n"
+  io <<< "$ "
+  while true {
+    if getCmd() {
+      runCmd()
+    }
+    io <<< "$ "
+  }
+  0
+}

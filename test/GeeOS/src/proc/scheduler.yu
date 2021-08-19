@@ -1,0 +1,118 @@
+public import arch.arch
+public import proc.consts
+public import lib.queue
+
+// info of each thread
+public struct PriorityInfo {
+  // is current thread valid
+  is_valid: bool,
+  // time slice of current thread
+  time: usize,
+  // current priority
+  curr_level: usize
+}
+
+// definition of round robin thread scheduler
+public struct Scheduler {
+  // info of all threads (threads[0] for head of queue)
+  threads: PriorityInfo[MAX_THREAD_COUNT + 1],
+  // priority queue
+  priority_queues: Queue[PRIORITY_COUNT],
+  // maximum time slice
+  max_time: usize,
+  // index of current thread
+  current: Tid,
+}
+
+// initialize current scheduler
+public def init(this: Scheduler var&, max_time: usize) {
+  var i = 0
+  while i < MAX_THREAD_COUNT + 1 {
+    this.threads[i] = [PriorityInfo] {false}
+    this.threads[i].curr_level = 0 as usize
+    i += 1
+  }
+  i = 0
+  while i < PRIORITY_COUNT {
+    this.priority_queues[i] = newQueue()
+    i += 1
+  }
+  this.max_time = max_time
+  this.current = 0 as Tid
+}
+
+// add thread to scheduler
+public def push(this: Scheduler var&, tid: Tid) {
+  let tid = tid + 1 as Tid
+  // allocate time slice for new thread
+  let info: PriorityInfo var& = this.threads[tid]
+  info.is_valid = true
+  // set current priority
+  if info.curr_level == 0 as usize {
+    info.time = this.max_time
+    info.curr_level = 1 as usize
+  }
+  else if info.time == 0 as usize {
+    info.curr_level = if info.curr_level == PRIORITY_COUNT as usize {
+      info.curr_level as usize
+    }
+    else {
+      info.curr_level + 1 as usize
+    }
+    info.time = this.max_time
+    var i = 1
+    while i != info.curr_level as i32{
+      info.time *= 2 as usize
+      i += 1
+    }
+  }
+  // push into queue
+  this.priority_queues[info.curr_level - 1 as usize].push(tid as usize)
+}
+
+// get next thread from scheduler
+public def pop(this: Scheduler var&, tid: Tid var&): bool {
+  var ret = 0 as Tid
+  var i = 0
+  while i < PRIORITY_COUNT {
+    if !this.priority_queues[i].empty() {
+      ret = this.priority_queues[i].pop() as Tid
+      break
+    }
+    i += 1
+  }
+  if ret != 0 as Tid {
+    // set as current thread
+    this.threads[ret].is_valid = false
+    this.current = ret
+    tid = ret - 1 as Tid
+    true
+  }
+  else {
+    false
+  }
+}
+
+// tell scheduler a tick passed
+// returns true if there is no current thread
+// or current thread run out of time slices
+public def tick(this: Scheduler var&): bool {
+  let tid = this.current
+  if tid != 0 as Tid {
+    this.threads[tid].time -= 1 as usize
+    !this.threads[tid].time
+  }
+  else {
+    true
+  }
+}
+
+// remove thread from scheduler
+public def exit(this: Scheduler var&, tid: Tid) {
+  let tid = tid + 1 as Tid
+  if this.current == tid {
+    this.current = 0 as Tid
+    let info: PriorityInfo var& = this.threads[tid]
+    info.curr_level = 0 as usize
+  }
+}

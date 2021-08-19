@@ -1,0 +1,141 @@
+import sys.unistd
+import sys.ctype
+
+
+// definition of IO structure
+public struct IO { __fd: i32 }
+
+// definition of three UNIX standard IO
+public let iin: IO = [IO] {FD_STDIN}
+public let out: IO = [IO] {FD_STDOUT}
+public let err: IO = [IO] {FD_STDERR}
+
+
+/*
+ * methods
+ */
+// put character to IO
+public def put(this: IO&, char: u8) {
+  write(this.__fd, &char, 1 as usize)
+}
+
+// get character from IO
+public def get(this: IO&): u8 {
+  var char: u8
+  read(this.__fd, &char, 1 as usize)
+  char
+}
+
+
+/*
+ * stream output operations
+ */
+// write string to IO
+public def <<<(this: IO&, str: u8*): IO& {
+  var i = 0
+  while str[i] != '\0' {
+    this.put(str[i])
+    i += 1
+  }
+  this
+}
+
+// write character to IO
+public def <<<(this: IO&, char: u8): IO& {
+  this.put(char)
+  this
+}
+
+// write pointer-sized integer to IO
+public def <<<(this: IO&, uint: usize): IO& {
+  var digits = [u8[21]] {}, i = 20, n = uint
+  if !n {
+    i = 19
+    digits[19] = '0'
+  }
+  else {
+    while n != 0 as usize {
+      i -= 1
+      digits[i] = (n % 10 as usize) as u8 + '0'
+      n /= 10 as usize
+    }
+  }
+  write(this.__fd, digits as u8* + i, (20 - i) as usize)
+  this
+}
+
+// write 32-bit unsigned integer to IO
+public def <<<(this: IO&, uint: u32): IO& {
+  this <<< uint as usize
+  this
+}
+
+// write 32-bit signed integer to IO
+public def <<<(this: IO&, int: i32): IO& {
+  var n = int
+  if n < 0 {
+    this.put('-')
+    n = -n
+  }
+  this <<< n as usize
+  this
+}
+
+// write boolean to IO
+public def <<<(this: IO&, val: bool): IO& {
+  if val {
+    this <<< "true"
+  }
+  else {
+    this <<< "false"
+  }
+  this
+}
+
+
+/*
+ * stream input operations
+ */
+// get an unsigned integer from IO, keeps the initial value of integer
+def getUInt(this: IO&, uint: usize var&) {
+  var char = this.get()
+  while isdigit(char as i32) != 0 {
+    uint = uint * 10 as usize + (char - '0') as usize
+    char = this.get()
+  }
+}
+
+// read character from IO
+public def >>>(this: IO&, char: u8 var&): IO& {
+  char = this.get()
+  this
+}
+
+// read pointer-sized integer from IO
+public def >>>(this: IO&, uint: usize var&): IO& {
+  let char = this.get()
+  if !isdigit(char as i32) { return this }
+  uint = (char - '0') as usize
+  this.getUInt(uint)
+  this
+}
+
+// read 32-bit unsigned integer from IO
+public def >>>(this: IO&, uint: u32 var&): IO& {
+  let char = this.get()
+  if !isdigit(char as i32) { return this }
+  var num = (char - '0') as usize
+  this.getUInt(num)
+  uint = num as u32
+  this
+}
+
+// read 32-bit signed integer from IO
+public def >>>(this: IO&, int: i32 var&): IO& {
+  let char = this.get(), neg = char == '-'
+  if !neg && !isdigit(char as i32) { return this }
+  var num = if !neg { (char - '0') as usize } else { 0 as usize }
+  this.getUInt(num)
+  int = if !neg { num as i32 } else { -(num as i32) }
+  this
+}

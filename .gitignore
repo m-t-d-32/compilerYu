@@ -1,0 +1,9 @@
+.idea/*
+out/*
+!out/.gitkeep
+*.iml
+*.4tu
+*.o
+*.s
+*.myout
+*.exe

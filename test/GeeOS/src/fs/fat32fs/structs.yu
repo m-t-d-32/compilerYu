@@ -1,0 +1,47 @@
+public struct DBRTable {
+  fat_table_count: u8, //2 //0x10
+  sector_size: u16, //512 //0xb
+  fat_table_sector_count: u32,  //0x24
+  fat_table_start_sector: u16, //0xe
+  cluster_sector_size: u8, //0xd
+  root_dictionary_cluster: u32, //2 //0x2c
+  fat32_verify_code: u8[8], //FAT32... //0x52
+}
+
+
+// constants
+inline let MAGIC_NUM          = 0x9eef5000 as u32
+inline let DIRECT_BLOCK_NUM   = 12 as u32
+inline let BLOCK_OFS_SIZE     = sizeof u32 as u32
+
+inline let DIRECTORY_ITEM_LEN = 32 as u32 //每个目录项长度
+inline let FAT32_FILE_NAME_MAX_LEN = 256 as u32 //文件最大长度
+
+
+// super block header
+public struct Fat32fsSbHeader {
+  magic_num: u32,                   // magic number
+  header_size: u32,                 // size of current header
+  block_size: u32,                  // size of block
+  free_map_num: u32,                // number of free map blocks
+  inode_blk_num: u32,               // number of inode blocks
+}
+
+// free map block header
+public struct Fat32fsFmbHeader {
+  unused_num: u32,                  // number of unused blocks
+}
+
+// inode block header
+public struct Fat32fsInbHeader {
+  unused_num: u32,                  // number of unused inodes
+}
+
+// disk inode
+public struct Fat32fsINode {
+  size: u32,                        // size of file
+  block_num: u32,                   // number of blocks
+  direct: u32[DIRECT_BLOCK_NUM],    // direct blocks
+  indirect: u32,                    // indirect block id
+  indirect2: u32,                   // 2nd indirect block id
+}

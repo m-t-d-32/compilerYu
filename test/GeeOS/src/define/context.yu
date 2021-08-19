@@ -1,0 +1,111 @@
+public import arch.arch
+public import arch.riscv.csr
+
+// trap return in 'traphand.S'
+extern declare _retTrap: ()
+
+// definition of trap frame
+public struct TrapFrame {
+  // GPRs
+  x: usize[32],
+  // supervisor status register
+  sstatus: usize,
+  // supervisor exception program counter
+  sepc: usize,
+  // supervisor trap value
+  stval: usize,
+  // supervisor trap cause
+  scause: usize,
+}
+
+inline def incSepc(this: TrapFrame var&) {
+  this.sepc += 4 as usize
+}
+
+inline def isUser(this: TrapFrame&): bool {
+  !(this.sstatus & SSTATUS_SPP)
+}
+
+// definition of context of thread context
+public struct ContextContext {
+  // return address
+  ra: usize,
+  // page table
+  satp: usize,
+  // saved registers
+  s: usize[12],
+  // trap frame
+  tf: TrapFrame,
+}
+
+// definition of thread context
+public struct Context {
+  context_addr: ContextContext var*,
+}
+
+// create new context of kernel context
+def newKernelCC(entry: usize, kstack_top: usize,
+                satp: usize): ContextContext {
+  // make sure privilege mode after 'sret' in kernel thread is still S-mode
+  var tf = [TrapFrame] {}
+  tf.x[2] = kstack_top
+  tf.sepc = entry
+  tf.sstatus = (getSstatus() | SSTATUS_SPP | SSTATUS_SPIE) & ~SSTATUS_SIE
+  [ContextContext] {
+    _retTrap as usize,
+    satp,
+    [usize[12]] {},
+    tf,
+  }
+}
+
+// create new context of user context
+def newUserCC(entry: usize, ustack_top: usize,
+              satp: usize): ContextContext {
+  // make sure privilege mode after 'sret' in user thread is U-mode
+  var tf = [TrapFrame] {}
+  tf.x[2] = ustack_top
+  tf.sepc = entry
+  tf.sstatus = (getSstatus() | SSTATUS_SPIE) & ~SSTATUS_SIE & ~SSTATUS_SPP
+  [ContextContext] {
+    _retTrap as usize,
+    satp,
+    [usize[12]] {},
+    tf
+  }
+}
+
+def pushAt(this: ContextContext, stack_top: usize): Context {
+  let ptr = stack_top as ContextContext var* - 1
+  (*ptr) = this
+  [Context] {ptr}
+}
+
+// create new null context
+public def newNullContext(): Context {
+  [Context] {null as ContextContext var*}
+}
+
+// create new kernel thread context
+public def newKernelContext(entry: usize, kstack_top: usize,
+                            satp: usize): Context {
+  newKernelCC(entry, kstack_top, satp).pushAt(kstack_top)
+}
+
+// create new user thread context
+public def newUserContext(entry: usize, ustack_top: usize,
+                          kstack_top: usize, satp: usize): Context {
+  newUserCC(entry, ustack_top, satp).pushAt(kstack_top)
+}
+
+// set initialize arguments for context
+public def appendInitArgs(this: Context&, args: usize[3]) {
+  let cc: ContextContext var& = *this.context_addr
+  cc.tf.x[10] = args[0]
+  cc.tf.x[11] = args[1]
+  cc.tf.x[12] = args[2]
+}
+
+// switch to another context
+// defined in 'proc/switch.S'
+extern declare switchTo: (Context var&, Context var&)

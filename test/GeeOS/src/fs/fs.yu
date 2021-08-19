@@ -1,0 +1,33 @@
+public import fs.vfs.vfs
+
+// import fs.geefs.fs
+import fs.fat32fs.fs
+import fs.devfs.fs
+
+// root inode of filesystem
+public var root_inode: INode var* = null as INode var*
+
+
+// initialize filesystem
+public def initFileSystem() {
+  // initialize GeeFS
+  // initGeeFs()
+  initFat32Fs()
+  // initialize DevFS
+  initDevFs()
+  // initialize root inode
+  root_inode = fat32fs.getRoot()
+  root_inode.open()
+}
+
+// clean up filesystem
+public def cleanUpFileSystem() {
+  // release root inode
+  root_inode.close()
+  root_inode = null as INode var*
+  // clean up GeeFS
+  // cleanUpGeeFs()
+  cleanUpFat32Fs()
+  // clean up DevFS
+  cleanUpDevFs()
+}

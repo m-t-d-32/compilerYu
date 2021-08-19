@@ -1,0 +1,190 @@
+public import sync.spinlock
+public import arch.arch
+public import lib.strview
+
+import lib.except
+import lib.alloc
+import lib.io
+
+// type of inode
+public enum INodeType {
+  File, Dir, CharDevice, BlockDevice,
+}
+
+// metadata of inode
+public struct Metadata {
+  id: u32,
+  itype: INodeType,
+  size: usize,
+  blk_size: u32,
+  blocks: u32,
+}
+
+// inode interface (base struct)
+// object of this structure must be allocated on heap
+public struct INode {
+  // lock for reference counter
+  lock: Spinlock,
+  ref_count: i32,
+  ops: u8*,
+}
+
+// filesystem interface
+// object of this structure must be allocated on heap
+public struct FileSystem {
+  ops: u8*,
+}
+
+// operations on inode
+public struct INodeOps {
+  op_get_fs: (INode var*): FileSystem var*,
+  op_get_metadata: (INode var*): Metadata,
+  op_find: (INode var*, StrView&): INode var*,
+  op_read: (INode var*, u8 var*, usize, usize): i32,
+  op_write: (INode var*, u8*, usize, usize): i32,
+  op_cleanup: (INode var*),
+}
+
+// operations on filesystem
+public struct FileSystemOps {
+  op_get_root: (FileSystem var*): INode var*,
+  op_sync: (FileSystem var*): bool,
+  op_cleanup: (FileSystem var*),
+}
+
+
+/*
+ * inode related stuffs
+ */
+// initialize status of inode
+public def init(this: INode var*, ops: INodeOps*) {
+  (*this).lock = newSpinlock()
+  (*this).ref_count = 0
+  (*this).ops = ops as u8*
+}
+
+// delete current inode
+public def del(this: INode var*) {
+  assert((*this).ref_count == 0, "INode.del")
+  let ops = (*this).ops as INodeOps*
+  ((*ops).op_cleanup)(this)
+  heap.dealloc(this as u8 var*)
+}
+
+// get virtual filesystem
+inline def getFs(this: INode var*): FileSystem var* {
+  let ops = (*this).ops as INodeOps*
+  ((*ops).op_get_fs)(this)
+}
+
+// get metadata of current inode
+// TODO:interface of FAT32
+inline def getMetadata(this: INode var*): Metadata {
+  let ops = (*this).ops as INodeOps*
+  ((*ops).op_get_metadata)(this)
+}
+
+// find inode in current inode
+// `name` will not contains '/'
+inline def find(this: INode var*, name: StrView&): INode var* {
+  let ops = (*this).ops as INodeOps*
+  ((*ops).op_find)(this, name)
+}
+
+// read the content of current inode to buffer
+// TODO:interface of FAT32
+inline def read(this: INode var*, buf: u8 var*, len: usize,
+                offset: usize): i32 {
+  let ops = (*this).ops as INodeOps*
+  ((*ops).op_read)(this, buf, len, offset)
+}
+
+// write the content of buffer to current inode
+inline def write(this: INode var*, buf: u8*, len: usize,
+                 offset: usize): i32 {
+  let ops = (*this).ops as INodeOps*
+  ((*ops).op_write)(this, buf, len, offset)
+}
+
+
+/*
+ * virtual filesystem related stuffs
+ */
+// initialize virtual filesystem
+public def init(this: FileSystem var*, ops: FileSystemOps*) {
+  (*this).ops = ops as u8*
+}
+
+// delete virtual filesystem
+public def del(this: FileSystem var*) {
+  let ops = (*this).ops as FileSystemOps*
+  ((*ops).op_cleanup)(this)
+  heap.dealloc(this as u8 var*)
+}
+
+// get root inode of filesystem
+inline def getRoot(this: FileSystem var*): INode var* {
+  let ops = (*this).ops as FileSystemOps*
+  ((*ops).op_get_root)(this)
+}
+
+// commit filesystem caches to disk
+inline def sync(this: FileSystem var*): bool {
+  let ops = (*this).ops as FileSystemOps*
+  ((*ops).op_sync)(this)
+}
+
+
+/*
+ * other extended operations for inode
+ */
+// open file
+public def open(this: INode var*) {
+  // (*this).lock.acquire()
+  // (*this).ref_count += 1
+  // (*this).lock.release()
+}
+
+// close file
+public def close(this: INode var*) {
+  // assert((*this).ref_count > 0, "INode.close")
+  // (*this).lock.acquire()
+  // (*this).ref_count -= 1
+  // (*this).lock.release()
+  // if (*this).ref_count == 0 {
+  //   this.del()
+  // }
+}
+
+// lookup file and return inode
+public def lookup(this: INode var*, path: StrView&): INode var* {
+  // check if is valid
+  let meta = this.getMetadata()
+  if meta.itype != INodeType.Dir || path.empty() {
+    return null as INode var*
+  }
+  // get trimmed path
+  var path = path
+  if path.getLen() > 1 as usize && path.back() == '/' {
+    path.removeSuffix(1)
+  }
+  // get current inode
+  var cur = if path.front() == '/' {
+    path.removePrefix(1)
+    this.getFs().getRoot()
+  }
+  else {
+    this
+  }
+  // get target inode
+  for name in path.split('/') {
+    let next = cur.find(name)
+    if next != null as INode var* {
+      cur = next
+    }
+    else {
+      return null as INode var*
+    }
+  }
+  cur
+}

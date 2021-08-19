@@ -1,0 +1,57 @@
+import arch.arch
+import arch.riscv.pagetable
+import arch.riscv.addr
+import arch.riscv.consts
+import arch.riscv.csr
+import mem.mset
+import mem.consts
+import mem.pm
+import mem.buddy
+import lib.io
+
+// initialize temporary root page table for kernel
+// returns temporary allocated root page table
+def initTempTable(): PageTable var* {
+  let root_table = allocPhyMem() as PageTable var*
+  let flags = PTE_FLAG_V | PTE_FLAG_R | PTE_FLAG_W
+  let offset = (KERNEL_VM_BASE - KERNEL_BASE) as usize
+  root_table.zero()
+  // set identity mapping vm(KERNEL_BASE) -> pm(KERNEL_BASE)
+  root_table.mapLinearRange(KERNEL_BASE as usize, PHY_STOP as usize,
+                            offset, flags | PTE_FLAG_X)
+  // set identity mapping vm(UART_ADDR) -> pm(UART_ADDR)
+  root_table.mapLinearRange(UART_ADDR as usize, UART_END as usize,
+                            offset, flags)
+  // set recursive mapping
+  let root_frame = newFrame(newPhysAddr(root_table as usize))
+  root_table.setRecursive(RECURSIVE_INDEX, root_frame)
+  // activate root page table
+  setSatp(root_frame.getPpn() | SATP_SV32)
+  runSfence()
+  root_table
+}
+
+// remapping kernel address space
+def remapKernel() {
+  // NOTE: do not release this page table
+  var mset = newMemorySet()
+  mset.activate()
+}
+
+public def initMem() {
+  // enable user memory access in S-mode
+  setSstatus(getSstatus() | SSTATUS_SUM)
+  // initialize phyical memory
+  initPhyMem()
+  // initialize heap memory
+  io <<< "initializing heap allocator...\n"
+  initHeapMem()
+  // initialize temporary page table
+  io <<< "setting up temp page table...\n"
+  let temp_table = initTempTable()
+  // remap kernel
+  io <<< "remapping kernel...\n"
+  remapKernel()
+  // free temporary page table
+  freePhyMem(temp_table as u8 var*)
+}

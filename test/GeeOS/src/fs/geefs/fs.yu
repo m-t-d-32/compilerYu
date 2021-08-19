@@ -1,0 +1,33 @@
+public import fs.geefs.geefs
+
+import fs.dev.mem
+import lib.except
+
+// filesystem image embedded in kernel, defined in 'init.S'
+extern declare _user_img_start: ()
+extern declare _user_img_end: ()
+
+// filesystem related objects
+public var geefs: FileSystem var* = null as FileSystem var*
+var dev: MemDevice
+
+
+// initialize GeeFS
+public def initGeeFs() {
+  // initialize device
+  dev = newMemDevice(_user_img_start as u8 var*,
+                     _user_img_end as usize - _user_img_start as usize)
+  // initialize GeeFS
+  initGeeFsOps()
+  geefs = newGeeFs(&dev as DeviceInterface var*)
+  if geefs == null as FileSystem var* {
+    panic("failed to open GeeFS")
+  }
+}
+
+// clean up GeeFS
+public def cleanUpGeeFs() {
+  geefs.del()
+  dev.del()
+}
+

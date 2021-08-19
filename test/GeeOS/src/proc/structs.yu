@@ -1,0 +1,223 @@
+public import define.context
+public import mem.mset
+public import fs.info
+public import proc.consts
+
+import arch.arch
+import arch.riscv.consts
+import arch.riscv.csr
+import mem.pm
+import mem.attr
+import mem.handler
+import lib.except
+import lib.alloc
+import lib.elf
+import lib.c.string
+import proc.consts
+
+// size of kernel stack
+// must be page size because stack is allocated by frame allocator
+let STACK_SIZE  = PAGE_SIZE as usize
+
+// definition of kernel thread stack
+public struct KernelStack {
+  addr: u8 var*,
+}
+
+// create new kernel stack
+public def newKernelStack(): KernelStack {
+  let addr = allocPhyMem()
+  assert(addr as i32 != 0, "newKernelStack - OOM")
+  [KernelStack] {addr}
+}
+
+// release kernel stack
+public def del(this: KernelStack var&) {
+  if this.addr as i32 != 0 {
+    freePhyMem(this.addr)
+  }
+  this.addr = null as u8 var*
+}
+
+// get top of kernel stack
+public def getTop(this: KernelStack&): usize {
+  this.addr as usize + STACK_SIZE
+}
+
+
+// definition of process
+public struct Process {
+  vm: MemorySet,
+  fds: FileInfo,
+  thread_count: i32,
+}
+
+def newProcess(vm: MemorySet): Process var* {
+  let proc = heap.alloc(sizeof Process) as Process var*
+  (*proc).vm = vm
+  (*proc).fds.init()
+  (*proc).thread_count = 0
+  proc
+}
+
+def del(this: Process var*) {
+  assert((*this).thread_count == 0, "Process.del")
+  (*this).vm.del()
+  (*this).fds.del()
+  heap.dealloc(this as u8 var*)
+}
+
+def incCounter(this: Process var*): Process var* {
+  (*this).thread_count += 1
+  this
+}
+
+def decCounter(this: Process var*): Process var* {
+  (*this).thread_count -= 1
+  if (*this).thread_count < 0 {
+    panic("decCounter")
+  }
+  else if (*this).thread_count == 0 {
+    this.del()
+  }
+  this
+}
+
+def getFds(this: Process var*): FileInfo var& {
+  (*this).fds
+}
+
+
+// definition of thread
+// objects of this structure will always be allocated on the heap
+public struct Thread {
+  context: Context,
+  kstack: KernelStack,
+  proc: Process var*,
+  wait: Tid,
+}
+
+// create memory attribute by ELF program header
+def toAttr(this: Elf32Phdr*): MemoryAttr {
+  var attr = newMemoryAttr().setUser()
+  if this.isExecute() {
+    attr = attr.setExecute()
+  }
+  attr
+}
+
+// create memory set by ELF file
+def makeMemorySet(this: ElfFile&): MemorySet {
+  // create a new memory set with kernel mapping
+  var ms = newMemorySet()
+  // traverse program headers in ELF file
+  let handler = newFrameHandler()
+  for ph in this.getPhdrIter() {
+    if ph.getType() != ElfPtype.Load {
+      continue
+    }
+    // get address info
+    let virt_addr = ph.getVaddr(), mem_size = ph.getMemSize()
+    // get data of program header
+    let data = this.getPhdrData(ph), data_len = ph.getFileSize()
+    // get slice of target virtual address
+    let target = {
+      ms.push(virt_addr as usize, (virt_addr + mem_size) as usize,
+              ph.toAttr(), handler)
+      virt_addr as u8 var*
+    }
+    // copy data to page
+    for _ in ms.with() {
+      memcpy(target, data, data_len as usize)
+      memset(target + data_len, 0, (mem_size - data_len) as usize)
+    }
+  }
+  ms
+}
+
+// create new idle thread
+public def newIdleThread(): Thread var* {
+  let thread = heap.alloc(sizeof Thread) as Thread var*
+  (*thread) = [Thread] {
+    newNullContext(),
+    newKernelStack(),
+    null as Process var*,
+    0 as Tid,
+  }
+  thread
+}
+
+// create new kernel thread
+public def newKernelThread(entry: usize): Thread var* {
+  let kstack = newKernelStack()
+  let thread = heap.alloc(sizeof Thread) as Thread var*
+  (*thread) = [Thread] {
+    newKernelContext(entry, kstack.getTop(), getSatp()),
+    kstack,
+    null as Process var*,
+    0 as Tid,
+  }
+  thread
+}
+
+// create new user thread
+public def newUserThread(data: u8*, wait_thread: Tid): Thread var* {
+  let elf = newElfFile(data), ehdr = elf.getEhdr()
+  if !ehdr.isValid() || ehdr.getType() != ElfEtype.Executable {
+    return null as Thread var*
+  }
+  // get entry point
+  let entry = ehdr.getEntry()
+  // create page table & user stack
+  var ms = elf.makeMemorySet()
+  let ustack_top = {
+    let ustack_bottom = USER_STACK_OFFSET as usize
+    let ustack_top = (USER_STACK_OFFSET + USER_STACK_SIZE) as usize
+    let handler = newFrameHandler()
+    ms.push(ustack_bottom, ustack_top, newMemoryAttr().setUser(), handler)
+    ustack_top
+  }
+  // create process
+  let proc = newProcess(ms).incCounter()
+  proc.getFds().initStdFds()
+  // create kernel stack & user thread
+  let kstack = newKernelStack()
+  let thread = heap.alloc(sizeof Thread) as Thread var*
+  (*thread) = [Thread] {
+    newUserContext(entry as usize, ustack_top, kstack.getTop(), ms.token()),
+    kstack,
+    proc,
+    wait_thread,
+  }
+  thread
+}
+
+// release current thread structure
+public def del(this: Thread var*) {
+  (*this).kstack.del()
+  if (*this).proc != null as Process var* {
+    (*this).proc.decCounter()
+  }
+  heap.dealloc(this as u8 var*)
+}
+
+// append initial arguments for current thread
+public def appendInitArgs(this: Thread*, args: usize[3]) {
+  (*this).context.appendInitArgs(args)
+}
+
+// switch to target thread
+public def switchTo(this: Thread var*, target: Thread var*) {
+  (*this).context.switchTo((*target).context)
+}
+
+// get file info
+public def getFds(this: Thread var*): FileInfo var& {
+  assert((*this).proc != null as Process var*, "Thread.getFds")
+  (*this).proc.getFds()
+}
+
+// get wait thread
+inline def getWait(this: Thread var*): Tid {
+  (*this).wait
+}

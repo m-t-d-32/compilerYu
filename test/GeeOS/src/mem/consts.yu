@@ -1,0 +1,24 @@
+public import arch.arch
+
+// position definitions in 'linker.ld'
+extern declare _geeos_start: ()
+extern declare _geeos_end: ()
+extern declare _text_start: ()
+extern declare _text_end: ()
+extern declare _rodata_start: ()
+extern declare _rodata_end: ()
+extern declare _data_start: ()
+extern declare _data_end: ()
+extern declare _bss_start: ()
+extern declare _bss_end: ()
+extern declare _stack_start: ()
+extern declare _stack_end: ()
+
+// definitions about physical memory
+inline let KERNEL_BASE    = MEM_ADDR
+inline let KERNEL_VM_BASE = 0x80000000
+inline let PHY_STOP       = KERNEL_BASE + MEM_SIZE_MIB * 1024 * 1024
+inline let HEAP_SIZE      = MEM_SIZE_MIB * 1024
+inline let HEAP_BASE      = PHY_STOP - HEAP_SIZE
+inline let MAX_BUDDY_ORDER= 12  // 从0 到 MAX_BUDDY_ORDER - 1
+inline let BUDDY_UNIT     = 64  //最小单元大小，单位为byte

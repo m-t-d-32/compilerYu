@@ -1,0 +1,110 @@
+public import sync.semaphore
+public import fs.vfs.vfs
+public import fs.file
+public import fs.consts
+
+import fs.fs
+import lib.except
+import fs.devfs.fs
+
+public struct FileInfo {
+  // semaphore for file descriptors
+  sema: Semaphore,
+  cwd: INode var*,
+  files: File[FILE_COUNT],
+}
+
+public def init(this: FileInfo var&) {
+  this.sema = newSemaphore()
+  root_inode.open()
+  this.cwd = root_inode
+  var i = 0
+  while i < FILE_COUNT {
+    this.files[i] = newFile()
+    i += 1
+  }
+}
+
+public def del(this: FileInfo var&) {
+  // release semaphore
+  this.sema.del()
+  // close cwd inode
+  this.cwd.close()
+  // close opened files
+  var i = 0
+  while i < FILE_COUNT {
+    if this.files[i].isOpened() {
+      this.files[i].close()
+    }
+    i += 1
+  }
+}
+
+public def lock(this: FileInfo var&) {
+  this.sema.wait()
+}
+
+public def unlock(this: FileInfo var&) {
+  this.sema.signal()
+}
+
+inline def getCwd(this: FileInfo&): INode var* {
+  this.cwd
+}
+
+public def setCwd(this: FileInfo var&, cwd: INode var*) {
+  assert(cwd != null as INode var*, "FileInfo.setCwd")
+  this.cwd.close()
+  cwd.open()
+  this.cwd = cwd
+}
+
+// allocate a new file descriptor
+public def allocFd(this: FileInfo var&, fd: i32 var&): bool {
+  var i = 0
+  while i < FILE_COUNT {
+    if this.files[i].isNone() {
+      this.files[i].setAllocated()
+      fd = i
+      return true
+    }
+    i += 1
+  }
+  // no avaliable slot for new file descriptor
+  false
+}
+
+// initialize standard input/output file descriptor
+public def initStdFds(this: FileInfo var&) {
+  var fd: i32, i = 0
+  while i < 3 {
+    let ret = this.allocFd(fd)
+    assert(ret && fd == i, "FileInfo.initStdFd")
+    if i == 0 {
+      // open stdin
+      this.files[i].open(stdin, O_RDONLY)
+    }
+    else {
+      // open stdout/stderr
+      this.files[i].open(stdout, O_WRONLY)
+    }
+    i += 1
+  }
+}
+
+// deallocate a file descriptor
+public def deallocFd(this: FileInfo var&, fd: i32) {
+  assert(fd >= 0 && fd < FILE_COUNT && this.files[fd].isAllocated(),
+         "FileInfo.deallocFd")
+  this.files[fd].setNone()
+}
+
+// get file item by `fd`
+public def getFile(this: FileInfo var&, fd: i32): File var* {
+  if fd >= 0 && fd < FILE_COUNT && !this.files[fd].isNone() {
+    &this.files[fd]
+  }
+  else {
+    null as File var*
+  }
+}

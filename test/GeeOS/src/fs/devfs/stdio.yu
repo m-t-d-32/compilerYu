@@ -1,0 +1,152 @@
+public import sync.spinlock
+public import lib.queue
+public import sync.condvar
+public import fs.vfs.vfs
+
+import lib.alloc
+import lib.io
+
+
+// buffer for standard input
+public struct StdIn {
+  lock: Spinlock,
+  buf: Queue,
+  pushed: CondVar,
+}
+
+public def newStdIn(): StdIn {
+  [StdIn] {newSpinlock(), newQueue(), newCondVar()}
+}
+
+public def del(this: StdIn var&) {
+  this.buf.del()
+  this.pushed.del()
+}
+
+public def push(this: StdIn var&, c: u8) {
+  this.lock.acquire()
+  this.buf.push(c as usize)
+  this.lock.release()
+  this.pushed.notify()
+}
+
+public def pop(this: StdIn var&): u8 {
+  var ret: u8
+  while true {
+    // try to pop character from queue
+    this.lock.acquire()
+    let valid = !this.buf.empty()
+    if valid {
+      ret = this.buf.pop() as u8
+    }
+    this.lock.release()
+    // wait if is invalid
+    if !valid {
+      this.pushed.wait()
+    }
+    else {
+      break
+    }
+  }
+  ret
+}
+
+
+/*
+ * INode related stuffs
+ */
+// inode of stdin
+public struct StdInINode {
+  inode: INode,
+  stdin: StdIn var*,
+}
+var stdin_ops: INodeOps
+
+// inode of stdout
+public struct StdOutINode {
+  inode: INode,
+}
+var stdout_ops: INodeOps
+
+public def newStdInINode(stdin: StdIn var*): INode var* {
+  var inode = heap.alloc(sizeof StdInINode) as StdInINode var*
+  (inode as INode var*).init(&stdin_ops)
+  (*inode).stdin = stdin
+  inode as INode var*
+}
+
+public def newStdOutINode(): INode var* {
+  var inode = heap.alloc(sizeof StdOutINode) as StdOutINode var*
+  (inode as INode var*).init(&stdout_ops)
+  inode as INode var*
+}
+
+
+/*
+ * inode virtual operations of stdio
+ */
+def stdIoGetFs(this: INode var*): FileSystem var* {
+  null as FileSystem var*
+}
+
+def stdIoGetMetadata(this: INode var*): Metadata {
+  [Metadata] {0 as u32, INodeType.CharDevice}
+}
+
+def stdIoFind(this: INode var*, name: StrView&): INode var* {
+  null as INode var*
+}
+
+def stdIoRead(this: INode var*, buf: u8 var*, len: usize,
+              offset: usize): i32 {
+  -1
+}
+
+def stdIoWrite(this: INode var*, buf: u8*, len: usize,
+               offset: usize): i32 {
+  -1
+}
+
+def stdIoCleanUp(this: INode var*) {}
+
+def stdInRead(this: INode var*, buf: u8 var*, len: usize,
+              offset: usize): i32 {
+  var i = 0
+  while i as usize < len {
+    buf[i] = (*(*(this as StdInINode var*)).stdin).pop()
+    i += 1
+  }
+  i
+}
+
+def stdOutWrite(this: INode var*, buf: u8*, len: usize,
+                offset: usize): i32 {
+  var i = 0
+  while i as usize < len {
+    io.putChar(buf[i])
+    i += 1
+  }
+  i
+}
+
+
+/*
+ * filesystem initializers
+ */
+// initialize virtual operations
+public def initStdIoOps() {
+  // stdin related ops
+  stdin_ops.op_get_fs = stdIoGetFs
+  stdin_ops.op_get_metadata = stdIoGetMetadata
+  stdin_ops.op_find = stdIoFind
+  stdin_ops.op_read = stdInRead
+  stdin_ops.op_write = stdIoWrite
+  stdin_ops.op_cleanup = stdIoCleanUp
+  // stdout related ops
+  stdout_ops.op_get_fs = stdIoGetFs
+  stdout_ops.op_get_metadata = stdIoGetMetadata
+  stdout_ops.op_find = stdIoFind
+  stdout_ops.op_read = stdIoRead
+  stdout_ops.op_write = stdOutWrite
+  stdout_ops.op_cleanup = stdIoCleanUp
+}
