@@ -7,8 +7,17 @@ import java.util.*;
 
 public class X86Transformer {
     private static final String NoNamedStr = "NULL";
+    private static final String NoNamedFourTuple = NoNamedStr + ", 0, 0, 0";
     private static final String localbytes = "LOCALBYTES";
     private static final String VarStr = "var";
+
+    private static final Map<String, Integer> priorityOfOperators = new HashMap<String, Integer>(){{
+        put(NoNamedStr, -1);
+        put("assign", 0);
+        put("lt", 1);
+        put("add", 1);
+    }};
+
     private final List<FourTuple> inputs;
     private final List<String> results = new ArrayList<>();
     private final Map<String, Type> typeAlias;
@@ -23,6 +32,11 @@ public class X86Transformer {
     private Function nowFunction = null;
     private int callingFuncParamIndex = 0;
 
+    private String nowOperatorResult = null;
+    private String nowTrueOperatorResult = null;
+    private Stack<String> nowSymbolStack = new Stack<>();
+    private Stack<String> nowOperatorStack = new Stack<>();
+
     public X86Transformer(List<FourTuple> inputs){
         Type.initializeBasicTypes();
         this.inputs = inputs;
@@ -31,8 +45,12 @@ public class X86Transformer {
 
     public String parse() throws PLDLAssemblingException {
         for (FourTuple tuple: inputs){
+            writeString("; " + tuple.toString());
             if (nowFunction != null){
                 nowFunction.getFourTuples().add(tuple);
+            }
+            if (!priorityOfOperators.containsKey(tuple.getTuples()[0])){
+                doOperator(new FourTuple(NoNamedFourTuple));
             }
             switch(tuple.getTuples()[0]){
                 case "import": /* Do nothing */ break;
@@ -60,6 +78,17 @@ public class X86Transformer {
                 case "pushvar": TransformPushVar(tuple); break;
                 case "call": TransformCall(tuple); break;
                 case "funcend": TransformFuncEnd(tuple); break;
+                case "cmp": TransformCmp(tuple); break;
+                case "label": TransformLabel(tuple); break;
+                case "b": TransformB(tuple); break;
+                case "beq": TransformBeq(tuple); break;
+                case "define": TransformDefine(tuple); break;
+                case "init": TransformInit(tuple); break;
+                case "blockassign": TransformBlockAssign(tuple); break;
+
+                case "assign":
+                case "add":
+                case "lt": TransformOperators(tuple); break;
                 //TODO: 剩下的还没有实现
                 default: throw new PLDLAssemblingException(tuple.toString(), null);
             }
@@ -86,7 +115,7 @@ public class X86Transformer {
         for (String varname: varTable.getU8pointers().keySet()){
             dataSymbols.add(varTable.getU8pointers().get(varname));
             String newVarname = StringGenerator.getNextCode();
-            allresults.add(newVarname + " db " + varname + ", 0");
+            allresults.add(newVarname + " db " + varname + ", 13, 10, 0");
             allresults.add(varTable.getU8pointers().get(varname).getName() + " dd " + newVarname);
         }
         allresults.add("section .bss");
@@ -111,16 +140,162 @@ public class X86Transformer {
         return String.join("\n", allresults);
     }
 
+    private void TransformBlockAssign(FourTuple tuple) {
+        String var1name = tuple.getTuples()[1];
+        Symbol var1 = varTable.getVar(nowBlockHeight, var1name);
+        String var3name = tuple.getTuples()[3];
+        Symbol var3 = varTable.addVar(nowBlockHeight, var3name, var1.getType());
+        readAddrToRegister(var1, "eax");
+        writeString("mov eax, [eax]");
+        readAddrToRegister(var3, "ebx");
+        writeRegisterToAddr("eax", "ebx");
+    }
+
+    private void TransformOperators(FourTuple tuple) throws PLDLAssemblingException {
+        String src1 = tuple.getTuples()[1];
+        if (nowOperatorResult == null){
+            //如果现在没有操作数，说明第一个也是一个操作数
+            nowSymbolStack.add(src1);
+        }
+        else if (!nowOperatorResult.equals(src1)){
+            doOperator(tuple);
+        }
+        doOperator(tuple);
+    }
+
+    private void doOperator(FourTuple tuple) {
+        while (!nowOperatorStack.isEmpty()){
+            String lastOperator = nowOperatorStack.peek();
+            String nowOperator = tuple.getTuples()[0];
+            if (priorityOfOperators.get(lastOperator) < priorityOfOperators.get(nowOperator)){
+                break;
+            }
+
+            lastOperator = nowOperatorStack.pop();
+            switch(lastOperator){
+                case "add": TransformAdd(tuple); break;
+                case "lt": TransformLt(tuple); break;
+                case "assign": TransformAssign(tuple); break;
+            }
+        }
+        if (!tuple.getTuples()[0].equals(NoNamedStr)) {
+            nowOperatorStack.add(tuple.getTuples()[0]);
+            nowSymbolStack.add(tuple.getTuples()[2]);
+            nowOperatorResult = tuple.getTuples()[3];
+        }
+        else {
+            if (nowOperatorResult != null && nowTrueOperatorResult != null) {
+                Symbol nowLast = varTable.getVar(nowBlockHeight, nowTrueOperatorResult);
+                nowLast.setName(nowOperatorResult);
+            }
+            nowOperatorStack.clear();
+            nowSymbolStack.clear();
+            nowOperatorResult = null;
+            nowTrueOperatorResult = null;
+        }
+    }
+
+    private void TransformAdd(FourTuple tuple) {
+        String var2name = nowSymbolStack.pop();
+        String var1name = nowSymbolStack.pop();
+        Symbol var1 = varTable.getVar(nowBlockHeight, var1name);
+        Symbol var2 = varTable.getVar(nowBlockHeight, var2name);
+        readAddrToRegister(var1, "eax");
+        writeString("mov eax, [eax]");
+        readAddrToRegister(var2, "ebx");
+        writeString("mov ebx, [ebx]");
+        writeString("add eax, ebx");
+        String var3name = StringGenerator.getNextCode();
+        nowTrueOperatorResult = var3name;
+        Symbol var3 = varTable.addVar(nowBlockHeight, var3name, Type.bool1);
+        readAddrToRegister(var3, "ebx");
+        writeRegisterToAddr("eax", "ebx");
+        nowSymbolStack.add(var3name);
+    }
+
+    private void TransformAssign(FourTuple tuple) {
+        String var2name = nowSymbolStack.pop();
+        String var1name = nowSymbolStack.pop();
+        Symbol var2 = varTable.getVar(nowBlockHeight, var2name);
+        readAddrToRegister(var2, "eax");
+        writeString("mov eax, [eax]");
+        String var3name = StringGenerator.getNextCode();
+        nowTrueOperatorResult = var3name;
+        Symbol var1 = varTable.getVar(nowBlockHeight, var1name);
+        Symbol var3 = varTable.addVar(nowBlockHeight, var3name, var2.getType());
+        readAddrToRegister(var1, "ebx");
+        writeRegisterToAddr("eax", "ebx");
+        readAddrToRegister(var3, "ebx");
+        writeRegisterToAddr("eax", "ebx");
+        nowSymbolStack.add(var3name);
+    }
+
+    private void TransformLt(FourTuple tuple) {
+        String var2name = nowSymbolStack.pop();
+        String var1name = nowSymbolStack.pop();
+        Symbol var1 = varTable.getVar(nowBlockHeight, var1name);
+        Symbol var2 = varTable.getVar(nowBlockHeight, var2name);
+        readAddrToRegister(var1, "eax");
+        writeString("mov eax, [eax]");
+        readAddrToRegister(var2, "ebx");
+        writeString("mov ebx, [ebx]");
+        writeString("cmp eax, ebx");
+        writeString("setl al");
+        String var3name = StringGenerator.getNextCode();
+        nowTrueOperatorResult = var3name;
+        Symbol var3 = varTable.addVar(nowBlockHeight, var3name, Type.bool1);
+        readAddrToRegister(var3, "ebx");
+        writeRegisterToAddr("eax", "ebx");
+        nowSymbolStack.add(var3name);
+    }
+
+    private void TransformInit(FourTuple tuple) {
+        TransformConstInit(tuple);
+    }
+
+    private void TransformDefine(FourTuple tuple) {
+        TransformConstDefine(tuple);
+    }
+
+    private void TransformBeq(FourTuple tuple) {
+        String labelname = tuple.getTuples()[3];
+        writeString("jz " + labelname);
+    }
+
+    private void TransformB(FourTuple tuple) {
+        String labelname = tuple.getTuples()[3];
+        writeString("jmp " + labelname);
+    }
+
+    private void TransformCmp(FourTuple tuple) {
+        String var1name = tuple.getTuples()[1];
+        String var2name = tuple.getTuples()[2];
+        Symbol var1 = varTable.getVar(nowBlockHeight, var1name);
+        Symbol var2 = varTable.getVar(nowBlockHeight, var2name);
+        readAddrToRegister(var1, "eax");
+        writeString("mov eax, [eax]");
+        readAddrToRegister(var2, "ebx");
+        writeString("mov ebx, [ebx]");
+        writeString("cmp eax, ebx");
+    }
+
+    private void TransformLabel(FourTuple tuple) {
+        String labelname = tuple.getTuples()[3];
+        writeString(labelname + ":");
+    }
+
     private void TransformFuncEnd(FourTuple tuple) {
         writeString("mov esp, ebp");
         writeString("pop ebp");
         writeString("ret");
+        nowFunction.setTrueSub(varTable.getInner(nowBlockHeight));
         nowFunction = null;
     }
 
     private void TransformCall(FourTuple tuple) throws PLDLAssemblingException {
         String funcname = tuple.getTuples()[1];
         String returnvarname = tuple.getTuples()[3];
+        int paramsize = 0;
         if (declaredFunctions.containsKey(funcname)){
             writeString("call " + funcname);
             FuncType func = declaredFunctions.get(funcname);
@@ -130,6 +305,10 @@ public class X86Transformer {
                 readAddrToRegister(returnvar, "ebx");
                 writeRegisterToAddr("eax", "ebx");
             }
+            for (Type type: func.getParamTypes()){
+                paramsize += type.getLength();
+            }
+            writeString("add esp, " + paramsize);
         }
         else if (definedFunctions.containsKey(funcname)){
             writeString("call " + funcname);
@@ -139,6 +318,10 @@ public class X86Transformer {
                 Symbol returnvar = varTable.addVar(nowBlockHeight, returnvarname, func.getReturnType());
                 getRegisterToVar("eax", returnvar, 0, returnvar.getType().getLength());
             }
+            for (Type type: func.getParamTypes()){
+                paramsize += type.getLength();
+            }
+            writeString("add esp, " + paramsize);
         }
         else {
             throw new PLDLAssemblingException("函数没有定义", null);

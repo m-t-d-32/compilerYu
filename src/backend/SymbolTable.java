@@ -62,7 +62,7 @@ public class SymbolTable {
         if (blockHeight.isEmpty()) {
             //说明是函数定义
             functionOffsets = 4;
-            functionParamOffsets = -4;
+            functionParamOffsets = -8;
         }
         SymbolTableInner varSymbolTable = root;
         for (Integer i : blockHeight) {
@@ -97,10 +97,7 @@ public class SymbolTable {
             }
         }
         else {
-            SymbolTableInner nowpointer = root;
-            for (Integer x : blockHeight) {
-                nowpointer = nowpointer.children.get(x);
-            }
+            SymbolTableInner nowpointer = getInner(blockHeight);
             while (nowpointer != null) {
                 for (Symbol s : nowpointer.variables) {
                     if (s.getName().equals(varname)) {
@@ -162,10 +159,7 @@ public class SymbolTable {
     }
 
     public Symbol addVar(List<Integer> blockHeight, String varname, Type type) {
-        SymbolTableInner nowpointer = root;
-        for (Integer x: blockHeight){
-            nowpointer = nowpointer.children.get(x);
-        }
+        SymbolTableInner nowpointer = getInner(blockHeight);
         Symbol symbol = new Symbol(varname, type);
         nowpointer.variables.add(symbol);
         symbol.setOffset(functionOffsets);
@@ -174,14 +168,19 @@ public class SymbolTable {
     }
 
     public Symbol addParam(List<Integer> blockHeight, String varname, Type type) {
-        SymbolTableInner nowpointer = root;
-        for (Integer x: blockHeight){
-            nowpointer = nowpointer.children.get(x);
-        }
+        SymbolTableInner nowpointer = getInner(blockHeight);
         Symbol symbol = new Symbol(varname, type);
         nowpointer.variables.add(symbol);
         symbol.setOffset(functionParamOffsets);
         functionParamOffsets -= symbol.getType().getLength();
         return symbol;
+    }
+
+    public SymbolTableInner getInner(List<Integer> blockHeight) {
+        SymbolTableInner nowpointer = root;
+        for (Integer x: blockHeight){
+            nowpointer = nowpointer.children.get(x);
+        }
+        return nowpointer;
     }
 }

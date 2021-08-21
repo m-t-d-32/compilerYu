@@ -547,12 +547,6 @@
                 <item>go($2)</item>
                 <item>$$(val) = $2(val)</item>
             </movements>
-            <before-generations>
-                <item>gen(in, NULL, NULL, NULL)</item>
-            </before-generations>
-            <after-generations>
-                <item>gen(out, NULL, NULL, NULL)</item>
-            </after-generations>
         </item>
         <item>
             <production>Blk_lineMulti -> Blk_line Blk_lineMulti</production>
@@ -780,7 +774,7 @@
                 <item>go($1)</item>
             </movements>
             <after-generations>
-                <item>gen(assign, $1(val), NULL, $$(endval))</item>
+                <item>gen(blockassign, $1(val), NULL, $$(endval))</item>
                 <item>gen(b, NULL, NULL, $$(elseend))</item>
             </after-generations>
         </item>
@@ -797,7 +791,7 @@
                 <item>gen(label, NULL, NULL, $$(start))</item>
             </before-generations>
             <after-generations>
-                <item>gen(assign, $2(val), NULL, $$(endval))</item>
+                <item>gen(blockassign, $2(val), NULL, $$(endval))</item>
                 <item>gen(label, NULL, NULL, $$(end))</item>
             </after-generations>
         </item>
@@ -814,7 +808,7 @@
                 <item>gen(label, NULL, NULL, $$(start))</item>
             </before-generations>
             <after-generations>
-                <item>gen(assign, $2(val), NULL, $$(endval))</item>
+                <item>gen(blockassign, $2(val), NULL, $$(endval))</item>
                 <item>gen(label, NULL, NULL, $$(end))</item>
             </after-generations>
         </item>
@@ -972,7 +966,7 @@
                 <item>gen(label, NULL, NULL, $$(start))</item>
             </before-generations>
             <after-generations>
-                <item>gen(assign, $1(val), NULL, $$(endval))</item>
+                <item>gen(blockassign, $1(val), NULL, $$(endval))</item>
                 <item>gen(b, NULL, NULL, $$(whenend))</item>
             </after-generations>
         </item>
@@ -985,7 +979,7 @@
                 <item>$$(val) = $2(val)</item>
             </movements>
             <after-generations>
-                <item>gen(assign, $2(val), NULL, $$(endval))</item>
+                <item>gen(blockassign, $2(val), NULL, $$(endval))</item>
             </after-generations>
         </item>
         <item>
@@ -1035,7 +1029,7 @@
             </movements>
             <after-generations>
                 <item>gen(b, NULL, NULL, $$(while1start))</item>
-                <item>gen(assign, $1(val), NULL, $$(endval))</item>
+                <item>gen(blockassign, $1(val), NULL, $$(endval))</item>
                 <item>gen(label, NULL, NULL, $$(end))</item>
             </after-generations>
         </item>
@@ -1083,7 +1077,7 @@
             </movements>
             <after-generations>
                 <item>gen(b, NULL, NULL, $$(forin1start))</item>
-                <item>gen(assign, $1(val), NULL, $$(endval))</item>
+                <item>gen(blockassign, $1(val), NULL, $$(endval))</item>
                 <item>gen(label, NULL, NULL, $$(end))</item>
             </after-generations>
         </item>

@@ -110,19 +110,19 @@ public class Type {
     public static PointerType boolpointer;
 
     public static void initializeBasicTypes() {
-        i8 = new Type("i8", 1, false);
-        i16 = new Type("i16", 2, false);
+        i8 = new Type("i8", 4, false);
+        i16 = new Type("i16", 4, false);
         i32 = new Type("i32", 4, false);
         i64 = new Type("i64", 8, false);
         isize = new Type("isize", 4, false);
-        u8 = new Type("u8", 1, false);
-        u16 = new Type("u16", 2, false);
+        u8 = new Type("u8", 4, false);
+        u16 = new Type("u16", 4, false);
         u32 = new Type("u32", 4, false);
         u64 = new Type("u64", 8, false);
         usize = new Type("usize", 4, false);
         f32 = new Type("f32", 4, false);
         f64 = new Type("f64", 8, false);
-        bool1 = new Type("bool", 1, false);
+        bool1 = new Type("bool", 4, false);
 
         i8pointer = new PointerType("i8pointer", i8, false);
         i16pointer = new PointerType("i16pointer", i16, false);
