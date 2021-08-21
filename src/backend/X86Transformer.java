@@ -15,7 +15,29 @@ public class X86Transformer {
         put(NoNamedStr, -1);
         put("assign", 0);
         put("lt", 1);
-        put("add", 1);
+        put("gt", 1);
+        put("add", 2);
+        put("sub", 2);
+    }};
+
+    private static final Map<String, List<String>> operatorSpecifiedAssembly = new HashMap<String, List<String>>(){{
+        put(NoNamedStr, new ArrayList<>());
+        put("add", new ArrayList<String>(){{
+            add("add eax, ebx");
+        }});
+        put("sub", new ArrayList<String>(){{
+            add("sub eax, ebx");
+        }});
+        put("lt", new ArrayList<String>(){{
+            add("cmp eax, ebx");
+            add("mov eax, 0");
+            add("setl al");
+        }});
+        put("gt", new ArrayList<String>(){{
+            add("cmp eax, ebx");
+            add("mov eax, 0");
+            add("setg al");
+        }});
     }};
 
     private final List<FourTuple> inputs;
@@ -88,7 +110,10 @@ public class X86Transformer {
 
                 case "assign":
                 case "add":
-                case "lt": TransformOperators(tuple); break;
+                case "sub":
+                case "lt":
+                case "gt":
+                    TransformOperators(tuple); break;
                 //TODO: 剩下的还没有实现
                 default: throw new PLDLAssemblingException(tuple.toString(), null);
             }
@@ -172,10 +197,24 @@ public class X86Transformer {
             }
 
             lastOperator = nowOperatorStack.pop();
-            switch(lastOperator){
-                case "add": TransformAdd(tuple); break;
-                case "lt": TransformLt(tuple); break;
-                case "assign": TransformAssign(tuple); break;
+            if (lastOperator.equals("assign")) {
+                TransformAssign(tuple);
+            } else {
+                String var2name = nowSymbolStack.pop();
+                String var1name = nowSymbolStack.pop();
+                Symbol var1 = varTable.getVar(nowBlockHeight, var1name);
+                Symbol var2 = varTable.getVar(nowBlockHeight, var2name);
+                readAddrToRegister(var1, "eax");
+                writeString("mov eax, [eax]");
+                readAddrToRegister(var2, "ebx");
+                writeString("mov ebx, [ebx]");
+                writeString(operatorSpecifiedAssembly.get(lastOperator));
+                String var3name = StringGenerator.getNextCode();
+                nowTrueOperatorResult = var3name;
+                Symbol var3 = varTable.addVar(nowBlockHeight, var3name, Type.bool1);
+                readAddrToRegister(var3, "ebx");
+                writeRegisterToAddr("eax", "ebx");
+                nowSymbolStack.add(var3name);
             }
         }
         if (!tuple.getTuples()[0].equals(NoNamedStr)) {
@@ -195,24 +234,6 @@ public class X86Transformer {
         }
     }
 
-    private void TransformAdd(FourTuple tuple) {
-        String var2name = nowSymbolStack.pop();
-        String var1name = nowSymbolStack.pop();
-        Symbol var1 = varTable.getVar(nowBlockHeight, var1name);
-        Symbol var2 = varTable.getVar(nowBlockHeight, var2name);
-        readAddrToRegister(var1, "eax");
-        writeString("mov eax, [eax]");
-        readAddrToRegister(var2, "ebx");
-        writeString("mov ebx, [ebx]");
-        writeString("add eax, ebx");
-        String var3name = StringGenerator.getNextCode();
-        nowTrueOperatorResult = var3name;
-        Symbol var3 = varTable.addVar(nowBlockHeight, var3name, Type.bool1);
-        readAddrToRegister(var3, "ebx");
-        writeRegisterToAddr("eax", "ebx");
-        nowSymbolStack.add(var3name);
-    }
-
     private void TransformAssign(FourTuple tuple) {
         String var2name = nowSymbolStack.pop();
         String var1name = nowSymbolStack.pop();
@@ -225,25 +246,6 @@ public class X86Transformer {
         Symbol var3 = varTable.addVar(nowBlockHeight, var3name, var2.getType());
         readAddrToRegister(var1, "ebx");
         writeRegisterToAddr("eax", "ebx");
-        readAddrToRegister(var3, "ebx");
-        writeRegisterToAddr("eax", "ebx");
-        nowSymbolStack.add(var3name);
-    }
-
-    private void TransformLt(FourTuple tuple) {
-        String var2name = nowSymbolStack.pop();
-        String var1name = nowSymbolStack.pop();
-        Symbol var1 = varTable.getVar(nowBlockHeight, var1name);
-        Symbol var2 = varTable.getVar(nowBlockHeight, var2name);
-        readAddrToRegister(var1, "eax");
-        writeString("mov eax, [eax]");
-        readAddrToRegister(var2, "ebx");
-        writeString("mov ebx, [ebx]");
-        writeString("cmp eax, ebx");
-        writeString("setl al");
-        String var3name = StringGenerator.getNextCode();
-        nowTrueOperatorResult = var3name;
-        Symbol var3 = varTable.addVar(nowBlockHeight, var3name, Type.bool1);
         readAddrToRegister(var3, "ebx");
         writeRegisterToAddr("eax", "ebx");
         nowSymbolStack.add(var3name);
@@ -477,6 +479,15 @@ public class X86Transformer {
         }
         else {
             nowFunction.getResults().add(s);
+        }
+    }
+
+    private void writeString(List<String> s){
+        if (nowFunction == null){
+            results.addAll(s);
+        }
+        else {
+            nowFunction.getResults().addAll(s);
         }
     }
 

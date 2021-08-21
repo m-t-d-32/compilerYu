@@ -3,10 +3,10 @@ import sys.string
 
 extern def main(argc: i32, argv: u8**): i32 {
   let hello = "Hello world!", len = strlen(hello)
-  var x = 1;
-  while (x < 10) {
+  var x = 10;
+  while (x > 0) {
     write(FD_STDOUT, hello, len)
-    x = x + 1;
+    x = x - 1;
   }
   0
 }
