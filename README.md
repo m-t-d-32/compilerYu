@@ -1,6 +1,6 @@
 # `NK-伏羲-X`
 
-这是[2021全国大学生计算机系统能力大赛 - 操作系统赛- 功能设计赛道](https://course.educg.net/sv2/indexexp/contest/contest.jsp?doVisit=true&contestID=qozAYR5kOWE&my=false&contestCID=0)的NK-伏羲-X队伍中使用Java实现的Yu语言的编译器。
+这是[2021全国大学生计算机系统能力大赛 - 操作系统赛- 功能设计赛道](https://course.educg.net/sv2/indexexp/contest/contest.jsp?doVisit=true&contestID=15N_psy6TIw&my=false&contestCID=0)的NK-伏羲-X队伍中使用Java实现的Yu语言的编译器。
 
 该选题由[MaxXSoft](https://github.com/MaxXSoft)命题，可以在[此处](https://github.com/oscomp/proj5-fuxi-full-system-with-cpu-compiler-os)查看其完整题目。本项目对应于其题目中使用其他语言设计YuLang的编译器的要求。本项目基于[`LYRON`](https://gitee.com/llyronx/LYRON)项目制作。
 
